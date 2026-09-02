@@ -86,8 +86,8 @@ interface DonutSlice {
 }
 
 const EXTENDED_CATEGORIES = [
-  'Komputer / Laptop',
-  ...ASSET_CATEGORIES.filter(c => c !== 'Komputer / Laptop')
+  'Laptop & Komputer',
+  ...ASSET_CATEGORIES.filter(c => c !== 'Laptop & Komputer')
 ];
 
 const BRANCH_ACCENTS = [
