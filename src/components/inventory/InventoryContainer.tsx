@@ -8,6 +8,8 @@ import {
   Upload, 
   ChevronLeft, 
   ChevronRight, 
+  ChevronsLeft,
+  ChevronsRight,
   HelpCircle,
   ArrowUpDown,
   ArrowLeft,
@@ -71,6 +73,40 @@ function getDisplayAssetTag(asset: AssetWithRelations, index: number): string {
   const formattedSeq = String(asset.id || index + 1).padStart(3, '0');
 
   return `${branchCode}/${catCode}/${monthRoman}/${yearTwoDigits}/${formattedSeq}`;
+}
+
+/**
+ * Builds a compact, ellipsis-aware page number list so pagination stays usable
+ * even when totalPages is in the hundreds/thousands.
+ * e.g. current=31, total=516 -> [1, 'dots', 30, 31, 32, 'dots', 516]
+ */
+function getPaginationRange(current: number, total: number, siblingCount: number = 1): (number | 'dots')[] {
+  const totalSlots = siblingCount * 2 + 5; // firstPage + lastPage + current + 2 siblings + 2 dots-worth of slack
+
+  if (total <= totalSlots) {
+    return Array.from({ length: total }, (_, i) => i + 1);
+  }
+
+  const leftSibling = Math.max(current - siblingCount, 1);
+  const rightSibling = Math.min(current + siblingCount, total);
+
+  const showLeftDots = leftSibling > 2;
+  const showRightDots = rightSibling < total - 1;
+
+  if (!showLeftDots && showRightDots) {
+    const leftItemCount = 3 + siblingCount * 2;
+    const leftRange = Array.from({ length: leftItemCount }, (_, i) => i + 1);
+    return [...leftRange, 'dots', total];
+  }
+
+  if (showLeftDots && !showRightDots) {
+    const rightItemCount = 3 + siblingCount * 2;
+    const rightRange = Array.from({ length: rightItemCount }, (_, i) => total - rightItemCount + i + 1);
+    return [1, 'dots', ...rightRange];
+  }
+
+  const middleRange = Array.from({ length: rightSibling - leftSibling + 1 }, (_, i) => leftSibling + i);
+  return [1, 'dots', ...middleRange, 'dots', total];
 }
 
 interface InventoryContainerProps {
@@ -398,6 +434,7 @@ export default function InventoryContainer({ user, branches, branchStats = [] }:
   const [category, setCategory] = useState<string>('');
   const [page, setPage] = useState<number>(1);
   const [refreshTrigger, setRefreshTrigger] = useState<number>(0);
+  const [jumpToPageInput, setJumpToPageInput] = useState<string>('');
 
   const [sortBy, setSortBy] = useState<string>('createdAt');
   const [sortOrder, setSortOrder] = useState<'asc' | 'desc'>('desc');
@@ -530,6 +567,15 @@ export default function InventoryContainer({ user, branches, branchStats = [] }:
     setPage(1);
     setSortBy('createdAt');
     setSortOrder('desc');
+  };
+
+  const handleJumpToPage = (e?: React.FormEvent) => {
+    if (e) e.preventDefault();
+    const target = parseInt(jumpToPageInput, 10);
+    if (!isNaN(target) && target >= 1 && target <= totalPages) {
+      setPage(target);
+    }
+    setJumpToPageInput('');
   };
 
   const handleRowClick = (asset: AssetWithRelations) => {
@@ -1785,11 +1831,25 @@ export default function InventoryContainer({ user, branches, branchStats = [] }:
                   </table>
                 </div>
 
-                <div className={styles.paginationRow} style={{ marginTop: '16px' }}>
+                <div className={styles.paginationRow} style={{ marginTop: '16px', flexWrap: 'wrap', gap: 'var(--space-3)' }}>
                   <div className={styles.paginationInfo}>
                     Menampilkan <b>{Math.min(totalCount, (page - 1) * 10 + 1)}</b> hingga <b>{Math.min(totalCount, page * 10)}</b> dari <b>{totalCount}</b> aset
+                    {totalPages > 0 && (
+                      <span style={{ marginLeft: 6, color: '#94a3b8' }}>
+                        (Halaman {page} dari {totalPages})
+                      </span>
+                    )}
                   </div>
-                  <div className={styles.paginationActions}>
+                  <div className={styles.paginationActions} style={{ flexWrap: 'wrap', rowGap: 8 }}>
+                    <button
+                      type="button"
+                      className={`${styles.navBtn} ${page === 1 ? styles.btnDisabled : ''}`}
+                      onClick={() => page > 1 && setPage(1)}
+                      disabled={page === 1}
+                      title="Halaman pertama"
+                    >
+                      <ChevronsLeft size={16} />
+                    </button>
                     <button
                       type="button"
                       className={`${styles.navBtn} ${page === 1 ? styles.btnDisabled : ''}`}
@@ -1799,16 +1859,37 @@ export default function InventoryContainer({ user, branches, branchStats = [] }:
                       <ChevronLeft size={16} />
                       <span>Sebelumnya</span>
                     </button>
-                    {Array.from({ length: totalPages }, (_, idx) => idx + 1).map((p) => (
-                      <button
-                        key={p}
-                        type="button"
-                        className={`${styles.pageBtn} ${page === p ? styles.btnActive : ''}`}
-                        onClick={() => setPage(p)}
-                      >
-                        {p}
-                      </button>
+
+                    {getPaginationRange(page, totalPages, 1).map((p, idx) => (
+                      p === 'dots' ? (
+                        <span
+                          key={`dots-${idx}`}
+                          style={{
+                            display: 'inline-flex',
+                            alignItems: 'flex-end',
+                            justifyContent: 'center',
+                            width: 32,
+                            height: 32,
+                            color: '#94a3b8',
+                            fontWeight: 700,
+                            paddingBottom: 4,
+                            userSelect: 'none',
+                          }}
+                        >
+                          &hellip;
+                        </span>
+                      ) : (
+                        <button
+                          key={p}
+                          type="button"
+                          className={`${styles.pageBtn} ${page === p ? styles.btnActive : ''}`}
+                          onClick={() => setPage(p)}
+                        >
+                          {p}
+                        </button>
+                      )
                     ))}
+
                     <button
                       type="button"
                       className={`${styles.navBtn} ${page === totalPages ? styles.btnDisabled : ''}`}
@@ -1818,6 +1899,49 @@ export default function InventoryContainer({ user, branches, branchStats = [] }:
                       <span>Berikutnya</span>
                       <ChevronRight size={16} />
                     </button>
+                    <button
+                      type="button"
+                      className={`${styles.navBtn} ${page === totalPages ? styles.btnDisabled : ''}`}
+                      onClick={() => page < totalPages && setPage(totalPages)}
+                      disabled={page === totalPages}
+                      title="Halaman terakhir"
+                    >
+                      <ChevronsRight size={16} />
+                    </button>
+
+                    {totalPages > 9 && (
+                      <form
+                        onSubmit={handleJumpToPage}
+                        style={{ display: 'flex', alignItems: 'center', gap: 6, marginLeft: 8 }}
+                      >
+                        <span style={{ fontSize: 'var(--text-xs)', color: '#64748b', whiteSpace: 'nowrap' }}>
+                          Ke halaman
+                        </span>
+                        <input
+                          type="number"
+                          min={1}
+                          max={totalPages}
+                          value={jumpToPageInput}
+                          onChange={(e) => setJumpToPageInput(e.target.value)}
+                          placeholder={String(page)}
+                          style={{
+                            width: 64,
+                            padding: '6px 8px',
+                            borderRadius: 8,
+                            border: '1px solid #e2e8f0',
+                            fontSize: 'var(--text-xs)',
+                            textAlign: 'center',
+                          }}
+                        />
+                        <button
+                          type="submit"
+                          className={styles.navBtn}
+                          style={{ padding: '6px 12px' }}
+                        >
+                          Ke
+                        </button>
+                      </form>
+                    )}
                   </div>
                 </div>
               </>
