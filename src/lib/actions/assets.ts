@@ -43,6 +43,52 @@ export interface PaginatedAssets {
   totalPages: number;
 }
 
+/**
+ * Server Action to get the next running sequence for assetTag generation.
+ * Looks at active assets for the same category and branch, then returns max sequence + 1.
+ */
+export async function getNextAssetSequence(category: string, branchId: number): Promise<number> {
+  try {
+    const normalizedCategory = normalizeAssetCategory(category);
+    if (!normalizedCategory) {
+      return 1;
+    }
+
+    const assets = await prisma.asset.findMany({
+      where: {
+        archivedAt: null,
+        category: normalizedCategory,
+        branchId,
+        assetTag: {
+          not: null,
+        },
+      },
+      select: {
+        assetTag: true,
+      },
+    });
+
+    let maxSeq = 0;
+    for (const asset of assets) {
+      const assetTag = asset.assetTag?.trim();
+      if (!assetTag) continue;
+
+      const match = assetTag.match(/(\d+)\s*$/);
+      if (!match) continue;
+
+      const seq = Number.parseInt(match[1], 10);
+      if (Number.isFinite(seq) && seq > maxSeq) {
+        maxSeq = seq;
+      }
+    }
+
+    return maxSeq + 1;
+  } catch (error) {
+    console.error('Error fetching next asset sequence:', error);
+    return 1;
+  }
+}
+
 export interface AssetFilters {
   search?: string;
   branchId?: number;

@@ -22,6 +22,7 @@ import type { AssetWithRelations } from '@/lib/actions/assets';
 import type { Branch, AssetStatus } from '@prisma/client';
 import { type AuthUser, ASSET_CATEGORIES } from '@/types';
 import { generateAssetTag } from '@/lib/utils/assetTag';
+import { getNextAssetSequence } from '@/lib/actions/assets';
 import styles from './modal.module.css';
 import inputStyles from '@/app/(dashboard)/transaksi/input/input.module.css';
 
@@ -103,24 +104,28 @@ export default function AssetDetailModal({
     setIsDeleting(false);
   }, [asset, initialCreateMode, isOpen, user.branchId]);
 
-  const regenerateAssetTag = (nextCategory: string, nextBranchId = branchId) => {
+  const regenerateAssetTag = async (nextCategory: string, nextBranchId = branchId) => {
     if (!nextCategory || !nextBranchId) return;
+    if (assetTag && assetTag.trim() !== '') return;
 
     const selectedBranch = branches.find((b) => b.id === Number(nextBranchId));
     const branchCode = selectedBranch?.code || 'HO';
+    const sequenceNumber = await getNextAssetSequence(nextCategory, Number(nextBranchId));
 
     setAssetTag(
       generateAssetTag({
         branchCode,
         category: nextCategory,
-        sequenceNumber: 1,
+        sequenceNumber,
       })
     );
   };
 
-  const handleCategoryChange = (newCategory: string) => {
+  const handleCategoryChange = async (newCategory: string) => {
     setCategory(newCategory);
-    regenerateAssetTag(newCategory);
+    if (!assetTag || assetTag.trim() === '') {
+      await regenerateAssetTag(newCategory);
+    }
   };
 
   // LOGIKA AUTO-GENERATE KODE TAG ASET
@@ -129,7 +134,7 @@ export default function AssetDetailModal({
     const isTagEmpty = !assetTag || assetTag.trim() === '';
 
     if (isOpen && isTagEmpty && category && branchId) {
-      regenerateAssetTag(category, branchId);
+      void regenerateAssetTag(category, branchId);
     }
   }, [category, branchId, assetTag, isOpen, branches]);
 
