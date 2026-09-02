@@ -15,11 +15,13 @@ export interface AssetWithRelations {
   userId: number;
   assetTag: string | null;
   name: string;
-  brandModel: string | null;
   category: string;
+  price: number | null;
+  serialNumber: string | null;
   locationDetail: string | null;
   pic: string | null;
   status: AssetStatus;
+  labelStatus: string | null;
   imagePath: string | null;
   notes: string | null;
   purchaseYear: number | null;
@@ -104,7 +106,7 @@ export async function getAssets(filters: AssetFilters = {}): Promise<ApiResponse
         { name: { contains: searchTerms, mode: 'insensitive' } },
         { assetTag: { contains: searchTerms, mode: 'insensitive' } },
         { category: { contains: searchTerms, mode: 'insensitive' } },
-        { brandModel: { contains: searchTerms, mode: 'insensitive' } },
+
         { locationDetail: { contains: searchTerms, mode: 'insensitive' } },
         { pic: { contains: searchTerms, mode: 'insensitive' } },
         { notes: { contains: searchTerms, mode: 'insensitive' } },
@@ -141,6 +143,42 @@ export async function getAssets(filters: AssetFilters = {}): Promise<ApiResponse
   } catch (error) {
     console.error('Error fetching assets:', error);
     return { success: false, error: 'Gagal memuat daftar inventaris dari database.' };
+  }
+}
+
+export async function getAssetsForExport(branchId?: number) {
+  try {
+    const user = await getCurrentUser();
+    if (!user) {
+      return { success: false, error: 'Sesi Anda telah berakhir. Silakan masuk kembali.' };
+    }
+
+    const requestedBranchId = user.role === 'SUPERADMIN' ? branchId : user.branchId || undefined;
+    if (user.role !== 'SUPERADMIN' && !requestedBranchId) {
+      return { success: false, error: 'Cabang asal tidak terdeteksi untuk akun Anda.' };
+    }
+
+    const assets = await prisma.asset.findMany({
+      where: {
+        archivedAt: null,
+        ...(requestedBranchId ? { branchId: requestedBranchId } : {}),
+      },
+      include: {
+        branch: true,
+      },
+      orderBy: [
+        { branchId: 'asc' },
+        { id: 'asc' },
+      ],
+    });
+
+    return {
+      success: true,
+      assets: JSON.parse(JSON.stringify(assets)),
+    };
+  } catch (error) {
+    console.error('Export fetch error:', error);
+    return { success: false, error: 'Gagal mengambil data untuk export' };
   }
 }
 
@@ -190,6 +228,11 @@ export async function createAsset(data: AssetFormData): Promise<ApiResponse<Asse
       return { success: false, error: `Tahun pembelian tidak valid (harus antara 1900 dan ${currentYear + 5}).` };
     }
 
+    const price = data.price === undefined || data.price === null ? null : Number(data.price);
+    if (price !== null && (!Number.isFinite(price) || price < 0)) {
+      return { success: false, error: 'Harga pembelian harus berupa angka yang valid.' };
+    }
+
     // Check assetTag uniqueness in active assets
     if (data.assetTag && data.assetTag.trim() !== '') {
       const existing = await prisma.asset.findFirst({
@@ -209,7 +252,7 @@ export async function createAsset(data: AssetFormData): Promise<ApiResponse<Asse
         userId: user.id,
         assetTag: data.assetTag?.trim() || null,
         name: data.name.trim(),
-        brandModel: data.brandModel?.trim() || null,
+
         category: categoryNormalized,
         locationDetail: data.locationDetail?.trim() || null,
         pic: data.pic?.trim() || null,
@@ -217,6 +260,8 @@ export async function createAsset(data: AssetFormData): Promise<ApiResponse<Asse
         imagePath: data.imagePath || null,
         notes: data.notes?.trim() || null,
         purchaseYear: data.purchaseYear,
+        price,
+        serialNumber: data.serialNumber?.trim() || null,
       },
       include: {
         branch: { select: { name: true, code: true } },
@@ -277,9 +322,10 @@ export async function updateAsset(
     }
 
     // Validate fields
-    if (!data.name.trim()) {
-      return { success: false, error: 'Nama aset tidak boleh kosong.' };
-    }
+// SESUDAH (Fix)
+if (data.name !== undefined && !data.name.trim()) {
+  return { success: false, error: 'Nama aset tidak boleh kosong.' };
+}
     const categoryNormalized = normalizeAssetCategory(data.category);
     if (!categoryNormalized) {
       return { success: false, error: 'Kategori aset tidak valid.' };
@@ -292,6 +338,11 @@ export async function updateAsset(
     const currentYear = new Date().getFullYear();
     if (isNaN(data.purchaseYear) || data.purchaseYear < 1900 || data.purchaseYear > currentYear + 5) {
       return { success: false, error: `Tahun pembelian tidak valid (harus antara 1900 dan ${currentYear + 5}).` };
+    }
+
+    const price = data.price === undefined || data.price === null ? null : Number(data.price);
+    if (price !== null && (!Number.isFinite(price) || price < 0)) {
+      return { success: false, error: 'Harga pembelian harus berupa angka yang valid.' };
     }
 
     // Check assetTag uniqueness if changed
@@ -321,7 +372,7 @@ export async function updateAsset(
         branchId: updateBranchId,
         assetTag: newTag || null,
         name: data.name.trim(),
-        brandModel: data.brandModel?.trim() || null,
+
         category: categoryNormalized,
         locationDetail: data.locationDetail?.trim() || null,
         pic: data.pic?.trim() || null,
@@ -329,6 +380,8 @@ export async function updateAsset(
         imagePath: data.imagePath || existingAsset.imagePath,
         notes: data.notes?.trim() || null,
         purchaseYear: data.purchaseYear,
+        price,
+        serialNumber: data.serialNumber?.trim() || null,
       },
       include: {
         branch: { select: { name: true, code: true } },
@@ -345,6 +398,7 @@ export async function updateAsset(
     });
 
     revalidatePath('/inventaris');
+    revalidatePath('/dashboard');
 
     return {
       success: true,
@@ -358,6 +412,9 @@ export async function updateAsset(
 
 /**
  * Server Action to archive (soft delete) an asset.
+ */
+/**
+ * Server Action to permanently delete an asset (Hard Delete).
  */
 export async function archiveAsset(id: number): Promise<ApiResponse<void>> {
   try {
@@ -374,8 +431,8 @@ export async function archiveAsset(id: number): Promise<ApiResponse<void>> {
       where: { id },
     });
 
-    if (!existingAsset || existingAsset.archivedAt) {
-      return { success: false, error: 'Aset tidak ditemukan atau sudah diarsipkan.' };
+    if (!existingAsset) {
+      return { success: false, error: 'Aset tidak ditemukan.' };
     }
 
     // Enforce branch safety limits
@@ -383,9 +440,9 @@ export async function archiveAsset(id: number): Promise<ApiResponse<void>> {
       return { success: false, error: 'Akses ditolak: Anda tidak memiliki akses untuk menghapus aset cabang lain.' };
     }
 
-    await prisma.asset.update({
+    // Hard Delete: Menghapus baris data secara permanen dari tabel database
+    await prisma.asset.delete({
       where: { id },
-      data: { archivedAt: new Date() },
     });
 
     await createAuditLog({
@@ -393,15 +450,46 @@ export async function archiveAsset(id: number): Promise<ApiResponse<void>> {
       actionType: 'DELETE',
       targetTable: 'Asset',
       targetId: String(id),
-      description: `Mengarsipkan aset ${existingAsset.name} (ID: ${id})`,
+      description: `Menghapus aset ${existingAsset.name} (ID: ${id}) secara permanen`,
     });
 
+    // Invalidate cache untuk halaman inventaris dan dashboard
     revalidatePath('/inventaris');
+    revalidatePath('/dashboard');
 
     return { success: true };
   } catch (error) {
-    console.error('Error archiving asset:', error);
+    console.error('Error deleting asset:', error);
     return { success: false, error: 'Terjadi kesalahan sistem saat menghapus aset.' };
+  }
+}
+
+export async function toggleAssetLabelStatus(id: number) {
+  try {
+    const asset = await prisma.asset.findUnique({
+      where: { id },
+      select: { labelStatus: true },
+    });
+
+    if (!asset) {
+      return { success: false, error: 'Aset tidak ditemukan.' };
+    }
+
+    const isLabeled = asset.labelStatus?.toUpperCase() === 'SUDAH';
+    const nextStatus = isLabeled ? 'BELUM' : 'SUDAH';
+
+    await prisma.asset.update({
+      where: { id },
+      data: { labelStatus: nextStatus },
+    });
+
+    revalidatePath('/inventaris');
+    revalidatePath('/dashboard');
+
+    return { success: true, nextStatus };
+  } catch (error) {
+    console.error('Error toggling label status:', error);
+    return { success: false, error: 'Gagal memperbarui status label.' };
   }
 }
 
@@ -417,7 +505,21 @@ export interface CSVImportResult {
  * Server Action to bulk import assets from a CSV string.
  * Automatically resolves status (case-insensitively with default fallbacks) and maps branch codes/names.
  */
-export async function importAssets(csvString: string): Promise<ApiResponse<CSVImportResult>> {
+export interface ImportAssetPayload {
+  name: string;
+  category: string;
+  assetTag?: string;
+  pic?: string;
+  locationDetail?: string;
+  status?: string;
+  branch?: string;
+  notes?: string;
+  purchaseYear?: string | number;
+  price?: number | null;
+  serialNumber?: string;
+}
+
+export async function importAssets(payload: ImportAssetPayload[]): Promise<ApiResponse<CSVImportResult>> {
   try {
     const user = await getCurrentUser();
     if (!user) {
@@ -428,48 +530,22 @@ export async function importAssets(csvString: string): Promise<ApiResponse<CSVIm
       return { success: false, error: 'Akses ditolak: Viewer tidak diizinkan mengimpor data.' };
     }
 
-    const rawLines = parseCSV(csvString);
-    if (rawLines.length < 2) {
-      return { success: false, error: 'File CSV/Excel kosong atau tidak memiliki data baris.' };
-    }
-
-    const headers = rawLines[0].map(h => h.trim().toLowerCase());
-
-    // Find index offsets for headings
-    const idxTag = headers.findIndex(h => h.includes('tag') || h.includes('kode') || h === 'code');
-    const idxName = headers.findIndex(h => h === 'nama' || h === 'name' || h.includes('barang') || h.includes('aset'));
-    const idxBrand = headers.findIndex(h => h.includes('brand') || h.includes('model') || h.includes('merek'));
-    const idxCategory = headers.findIndex(h => h === 'kategori' || h === 'category');
-    const idxLocation = headers.findIndex(h => h.includes('lokasi') || h.includes('location') || h.includes('detail'));
-    const idxPIC = headers.findIndex(h => h.includes('pic') || h.includes('penanggung') || h.includes('holder'));
-    const idxStatus = headers.findIndex(h => h.includes('status') || h.includes('kondisi'));
-    const idxNotes = headers.findIndex(h => h.includes('catatan') || h.includes('notes') || h.includes('keterangan'));
-    const idxBranch = headers.findIndex(h => h.includes('cabang') || h.includes('branch'));
-    const idxYear = headers.findIndex(h => h.includes('tahun') || h.includes('year') || h === 'thn' || h.includes('pembelian'));
-
-    // Validate mandatory headers
-    if (idxName === -1 || idxCategory === -1 || idxYear === -1) {
-      return {
-        success: false,
-        error: 'Struktur kolom tidak lengkap. Pastikan memiliki kolom dengan tajuk: Nama (Name), Kategori (Category), dan Tahun (Year).',
-      };
+    if (payload.length === 0) {
+      return { success: false, error: 'Tidak ada data aset yang valid untuk diimpor.' };
     }
 
     // Load branches database cache
     const dbBranches = await prisma.branch.findMany();
-    const dataRows = rawLines.slice(1).filter(r => r.length > 0 && r.some(val => val.trim() !== ''));
+    const dataRows = payload.filter(row => row.name && row.name.trim() !== '');
 
     const importErrors: string[] = [];
     const assetsToInsert: Prisma.AssetCreateManyInput[] = [];
 
     // Pre-query existing active asset tags to avoid N+1 DB operations
     const fileTags = new Set<string>();
-    if (idxTag !== -1) {
-      for (const row of dataRows) {
-        const tag = row[idxTag]?.trim();
-        if (tag && tag !== '') {
-          fileTags.add(tag);
-        }
+    for (const row of dataRows) {
+      if (row.assetTag && row.assetTag.trim() !== '') {
+        fileTags.add(row.assetTag.trim());
       }
     }
 
@@ -494,17 +570,17 @@ export async function importAssets(csvString: string): Promise<ApiResponse<CSVIm
       const rowNum = i + 2;
 
       try {
-        // 1. Name Check
-        const name = row[idxName]?.trim();
-        if (!name) {
-          throw new Error('Nama aset tidak boleh kosong.');
+        // 1. Name Check - Validasi aman untuk tipe data yang tidak terduga
+        if (!row.name || typeof row.name !== 'string' || row.name.trim() === '') {
+          throw new Error('Nama aset tidak boleh kosong dan harus berupa teks yang valid.');
         }
+        const name = row.name.trim();
 
-        // 2. Category Check
-        const categoryRaw = row[idxCategory]?.trim();
-        if (!categoryRaw) {
-          throw new Error('Kategori aset tidak boleh kosong.');
+        // 2. Category Check - Validasi aman untuk tipe data yang tidak terduga
+        if (!row.category || typeof row.category !== 'string' || row.category.trim() === '') {
+          throw new Error('Kategori aset tidak boleh kosong dan harus berupa teks yang valid.');
         }
+        const categoryRaw = row.category.trim();
         const categoryNormalized = normalizeAssetCategory(categoryRaw);
         if (!categoryNormalized) {
           throw new Error(`Kategori '${categoryRaw}' tidak valid.`);
@@ -512,8 +588,8 @@ export async function importAssets(csvString: string): Promise<ApiResponse<CSVIm
 
         // 3. Asset Tag Unique Validation
         let assetTag: string | null = null;
-        if (idxTag !== -1 && row[idxTag]?.trim()) {
-          assetTag = row[idxTag].trim();
+        if (row.assetTag && row.assetTag.trim()) {
+          assetTag = row.assetTag.trim();
           const normalizedTag = assetTag.toLowerCase();
           if (seenImportTags.has(normalizedTag)) {
             throw new Error(`Kode Tag Aset '${assetTag}' duplikat di dalam file.`);
@@ -523,23 +599,24 @@ export async function importAssets(csvString: string): Promise<ApiResponse<CSVIm
           }
           seenImportTags.add(normalizedTag);
         }
+        // Store original assetTag format while checking duplicates case-insensitively
+        assetTag = assetTag ? assetTag.trim() : null;
 
-        // 4. Brand Model
-        const brandModel = idxBrand !== -1 ? row[idxBrand]?.trim() || null : null;
+
 
         // 5. Location Detail
-        const locationDetail = idxLocation !== -1 ? row[idxLocation]?.trim() || null : null;
+        const locationDetail = row.locationDetail?.trim() || null;
 
         // 6. PIC
-        const pic = idxPIC !== -1 ? row[idxPIC]?.trim() || null : null;
+        const pic = row.pic?.trim() || null;
 
         // 7. Notes
-        const notes = idxNotes !== -1 ? row[idxNotes]?.trim() || null : null;
+        const notes = row.notes?.trim() || null;
 
         // 8. Status Matching Case-insensitively
         let status: AssetStatus = AssetStatus.AKTIF;
-        if (idxStatus !== -1 && row[idxStatus]) {
-          const statusRaw = row[idxStatus].trim().toLowerCase();
+        if (row.status) {
+          const statusRaw = row.status.trim().toLowerCase();
           if (statusRaw.includes('rusak') || statusRaw === 'broken' || statusRaw === 'damaged') {
             status = AssetStatus.RUSAK;
           } else if (statusRaw.includes('perbaikan') || statusRaw.includes('servis') || statusRaw === 'repair' || statusRaw === 'diperbaiki') {
@@ -554,7 +631,7 @@ export async function importAssets(csvString: string): Promise<ApiResponse<CSVIm
         // 9. Branch Isolation check
         let branchIdVal: number;
         if (user.role === 'SUPERADMIN') {
-          const branchRaw = idxBranch !== -1 ? row[idxBranch]?.trim().toLowerCase() : '';
+          const branchRaw = row.branch?.trim().toLowerCase() || '';
           const matchedBranch = dbBranches.find(
             b => b.name.toLowerCase() === branchRaw || b.code.toLowerCase() === branchRaw
           );
@@ -575,31 +652,45 @@ export async function importAssets(csvString: string): Promise<ApiResponse<CSVIm
           branchIdVal = user.branchId;
         }
 
-        // 10. Purchase Year Check
+        // 10. Purchase Year Check - Validasi aman untuk tipe data yang tidak terduga
         let purchaseYear: number;
-        if (idxYear !== -1 && row[idxYear]?.trim()) {
-          const parsedYear = parseInt(row[idxYear].trim(), 10);
-          const currentYear = new Date().getFullYear();
-          if (isNaN(parsedYear) || parsedYear < 1900 || parsedYear > currentYear + 5) {
-            throw new Error('Tahun pembelian harus berupa angka tahun yang valid (misal: 2024).');
-          }
-          purchaseYear = parsedYear;
-        } else {
+        if (!row.purchaseYear) {
           throw new Error('Tahun pembelian wajib diisi.');
         }
+        
+        const parsedYear = typeof row.purchaseYear === 'string' 
+          ? parseInt(row.purchaseYear.trim(), 10) 
+          : row.purchaseYear;
+          
+        const currentYear = new Date().getFullYear();
+        if (isNaN(parsedYear) || parsedYear < 1900 || parsedYear > currentYear + 5) {
+          throw new Error('Tahun pembelian harus berupa angka tahun yang valid (misal: 2024).');
+        }
+        purchaseYear = parsedYear;
+
+        // 11. Price is optional; preserve zero and reject invalid values.
+        const price = row.price === undefined || row.price === null
+          ? null
+          : Number(row.price);
+        if (price !== null && !Number.isFinite(price)) {
+          throw new Error('Harga harus berupa angka yang valid.');
+        }
+
+        const serialNumber = row.serialNumber?.trim() || null;
 
         assetsToInsert.push({
           branchId: branchIdVal,
           userId: user.id,
-          assetTag: assetTag ? assetTag.toLowerCase() : null,
+          assetTag: assetTag && assetTag.trim() !== '' ? assetTag : null, // Simpan nilai asli tanpa lowercase
           name,
-          brandModel,
           category: categoryNormalized,
           locationDetail,
           pic,
           status,
           notes,
           purchaseYear,
+          price,
+          serialNumber,
           imagePath: null, // Initial import does not carry photo files
         });
       } catch (err) {
@@ -623,8 +714,8 @@ export async function importAssets(csvString: string): Promise<ApiResponse<CSVIm
 
     // Commit records one by one to handle individual failures
     let importedCount = 0;
-    // The `importErrors` array is empty at this point due to the fail-fast check above.
-    // We can reuse it to collect errors during the insertion phase.
+    // Buat array terpisah untuk mengumpulkan error selama penyimpanan database
+    const insertionErrors: string[] = [];
 
     for (let i = 0; i < assetsToInsert.length; i++) {
       const asset = assetsToInsert[i];
@@ -635,14 +726,28 @@ export async function importAssets(csvString: string): Promise<ApiResponse<CSVIm
         await prisma.asset.create({ data: asset });
         importedCount++;
       } catch (error) {
+        // Log detail error ke terminal server
+        console.error(`[Import Error Baris ${rowNum}]:`, error);
+        
         let message = 'Kesalahan tak terduga saat menyimpan baris ini.';
-        if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2002') {
-          message = `Gagal impor: Kode Tag Aset '${asset.assetTag}' kemungkinan sudah ada di database.`;
+        
+        if (error instanceof Prisma.PrismaClientKnownRequestError) {
+          if (error.code === 'P2002') {
+            message = `Kode Tag Aset '${asset.assetTag || 'tanpa tag'}' sudah terdaftar di database.`;
+          } else if (error.code === 'P2003') {
+            message = `Relasi Cabang (branchId: ${asset.branchId}) atau User ID (${asset.userId}) tidak ditemukan di database.`;
+          } else {
+            message = `Database Error (${error.code}): ${error.message}`;
+          }
+        } else if (error instanceof Error) {
+          message = error.message;
         }
-        importErrors.push(`Baris ${rowNum}: ${message}`);
+        
+        insertionErrors.push(`Baris ${rowNum}: ${message}`);
       }
     }
 
+    // Create audit log if any assets were successfully imported
     if (importedCount > 0) {
       await createAuditLog({
         userId: user.id,
@@ -655,12 +760,42 @@ export async function importAssets(csvString: string): Promise<ApiResponse<CSVIm
 
     revalidatePath('/inventaris');
 
+    // Gabungkan semua error (validasi awal + error penyimpanan)
+    const allErrors = [...importErrors, ...insertionErrors];
+
+    // Jika tidak ada aset yang berhasil diimpor, kembalikan error spesifik
+    if (importedCount === 0) {
+      return {
+        success: false,
+        error: "Gagal menyimpan semua baris data ke database.",
+        data: {
+          totalRows: dataRows.length,
+          importedCount: 0,
+          errors: allErrors,
+        },
+      };
+    }
+
+    // Jika masih ada error (beberapa baris gagal, tapi sebagian berhasil)
+    if (allErrors.length > 0) {
+      return {
+        success: false,
+        error: 'Beberapa baris data gagal disimpan ke database.',
+        data: {
+          totalRows: dataRows.length,
+          importedCount: importedCount,
+          errors: allErrors,
+        },
+      };
+    }
+
+    // Jika semua aset berhasil diimpor tanpa error
     return {
       success: true,
       data: {
         totalRows: dataRows.length,
         importedCount: importedCount,
-        errors: importErrors,
+        errors: allErrors,
       },
     };
   } catch (error) {

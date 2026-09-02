@@ -21,6 +21,7 @@ import { createAsset, updateAsset, archiveAsset } from '@/lib/actions/assets';
 import type { AssetWithRelations } from '@/lib/actions/assets';
 import type { Branch, AssetStatus } from '@prisma/client';
 import { type AuthUser, ASSET_CATEGORIES } from '@/types';
+import { generateAssetTag } from '@/lib/utils/assetTag';
 import styles from './modal.module.css';
 import inputStyles from '@/app/(dashboard)/transaksi/input/input.module.css';
 
@@ -52,7 +53,6 @@ export default function AssetDetailModal({
   const [name, setName] = useState<string>('');
   const [category, setCategory] = useState<string>('');
   const [assetTag, setAssetTag] = useState<string>('');
-  const [brandModel, setBrandModel] = useState<string>('');
   const [pic, setPic] = useState<string>('');
   const [locationDetail, setLocationDetail] = useState<string>('');
   const [status, setStatus] = useState<AssetStatus>('AKTIF');
@@ -60,6 +60,8 @@ export default function AssetDetailModal({
   const [branchId, setBranchId] = useState<string>('');
   const [imagePath, setImagePath] = useState<string>('');
   const [purchaseYear, setPurchaseYear] = useState<string>('');
+  const [price, setPrice] = useState<string>('');
+  const [serialNumber, setSerialNumber] = useState<string>('');
 
   // Image upload states
   const [uploadingImage, setUploadingImage] = useState<boolean>(false);
@@ -72,7 +74,6 @@ export default function AssetDetailModal({
       setName(asset.name);
       setCategory(asset.category);
       setAssetTag(asset.assetTag || '');
-      setBrandModel(asset.brandModel || '');
       setPic(asset.pic || '');
       setLocationDetail(asset.locationDetail || '');
       setStatus(asset.status);
@@ -80,12 +81,13 @@ export default function AssetDetailModal({
       setBranchId(String(asset.branchId));
       setImagePath(asset.imagePath || '');
       setPurchaseYear(asset.purchaseYear ? String(asset.purchaseYear) : '');
+      setPrice(asset.price != null ? String(asset.price) : '');
+      setSerialNumber(asset.serialNumber || '');
       setIsEditing(false);
     } else {
       setName('');
       setCategory('');
       setAssetTag('');
-      setBrandModel('');
       setPic('');
       setLocationDetail('');
       setStatus('AKTIF');
@@ -93,11 +95,43 @@ export default function AssetDetailModal({
       setBranchId(user.branchId ? String(user.branchId) : '');
       setImagePath('');
       setPurchaseYear('');
+      setPrice('');
+      setSerialNumber('');
       setIsEditing(true);
     }
     setError(null);
     setIsDeleting(false);
-  }, [asset, initialCreateMode, isOpen]);
+  }, [asset, initialCreateMode, isOpen, user.branchId]);
+
+  const regenerateAssetTag = (nextCategory: string, nextBranchId = branchId) => {
+    if (!nextCategory || !nextBranchId) return;
+
+    const selectedBranch = branches.find((b) => b.id === Number(nextBranchId));
+    const branchCode = selectedBranch?.code || 'HO';
+
+    setAssetTag(
+      generateAssetTag({
+        branchCode,
+        category: nextCategory,
+        sequenceNumber: 1,
+      })
+    );
+  };
+
+  const handleCategoryChange = (newCategory: string) => {
+    setCategory(newCategory);
+    regenerateAssetTag(newCategory);
+  };
+
+  // LOGIKA AUTO-GENERATE KODE TAG ASET
+  useEffect(() => {
+    // Hanya generate jika assetTag saat ini kosong/null dan modal terbuka
+    const isTagEmpty = !assetTag || assetTag.trim() === '';
+
+    if (isOpen && isTagEmpty && category && branchId) {
+      regenerateAssetTag(category, branchId);
+    }
+  }, [category, branchId, assetTag, isOpen, branches]);
 
   if (!isOpen) return null;
 
@@ -171,7 +205,7 @@ export default function AssetDetailModal({
       name: name.trim(),
       category: category.trim(),
       assetTag: assetTag.trim() || null,
-      brandModel: brandModel.trim() || null,
+
       pic: pic.trim() || null,
       locationDetail: locationDetail.trim() || null,
       status,
@@ -179,6 +213,8 @@ export default function AssetDetailModal({
       branchId: branchId ? Number(branchId) : undefined,
       imagePath: imagePath || null,
       purchaseYear: yearNum,
+      price: price ? parseFloat(price) : null,
+      serialNumber: serialNumber.trim() || null,
     };
 
     try {
@@ -222,16 +258,6 @@ export default function AssetDetailModal({
       setIsDeleting(false);
     } finally {
       setLoading(false);
-    }
-  };
-
-  const getStatusLabel = (s: AssetStatus) => {
-    switch (s) {
-      case 'AKTIF': return 'Aktif (Bagus)';
-      case 'RUSAK': return 'Rusak';
-      case 'DIPERBAIKI': return 'Dalam Servis';
-      case 'HILANG': return 'Hilang';
-      default: return s;
     }
   };
 
@@ -302,7 +328,7 @@ export default function AssetDetailModal({
                     required
                     className={inputStyles.input}
                     value={category}
-                    onChange={(e) => setCategory(e.target.value)}
+                    onChange={(e) => handleCategoryChange(e.target.value)}
                   >
                     <option value="">Pilih Kategori</option>
                     {ASSET_CATEGORIES.map(cat => (
@@ -311,31 +337,23 @@ export default function AssetDetailModal({
                   </select>
                 </div>
 
-                {/* Asset Tag Code */}
+                {/* Asset Tag Code (Auto-generated / Manual) */}
                 <div className={inputStyles.formGroup}>
-                  <label htmlFor="assetTag" className={inputStyles.label}>Kode Tag Aset (Optional)</label>
+                  <label htmlFor="assetTag" className={inputStyles.label}>Kode Tag Aset (Otomatis)</label>
                   <input
                     id="assetTag"
                     type="text"
                     className={inputStyles.input}
-                    placeholder="Contoh: AST-HO-2026-001"
+                    placeholder="Akan terisi otomatis saat Kategori & Cabang dipilih"
                     value={assetTag}
                     onChange={(e) => setAssetTag(e.target.value)}
                   />
+                  <small style={{ color: '#64748b', fontSize: '11px', marginTop: '2px', display: 'block' }}>
+                    *Otomatis terisi jika kosong. Anda tetap dapat mengubahnya secara manual.
+                  </small>
                 </div>
 
-                {/* Brand / Model */}
-                <div className={inputStyles.formGroup}>
-                  <label htmlFor="brandModel" className={inputStyles.label}>Brand / Model (Optional)</label>
-                  <input
-                    id="brandModel"
-                    type="text"
-                    className={inputStyles.input}
-                    placeholder="Contoh: Lenovo L14 Gen 2"
-                    value={brandModel}
-                    onChange={(e) => setBrandModel(e.target.value)}
-                  />
-                </div>
+
 
                 {/* Tahun Pembelian */}
                 <div className={inputStyles.formGroup}>
@@ -350,6 +368,34 @@ export default function AssetDetailModal({
                     placeholder="Contoh: 2024"
                     value={purchaseYear}
                     onChange={(e) => setPurchaseYear(e.target.value)}
+                  />
+                </div>
+
+                {/* Purchase Price */}
+                <div className={inputStyles.formGroup}>
+                  <label htmlFor="assetPrice" className={inputStyles.label}>Harga Pembelian (Rp)</label>
+                  <input
+                    id="assetPrice"
+                    type="number"
+                    min="0"
+                    step="0.01"
+                    className={inputStyles.input}
+                    placeholder="Contoh: 1200000"
+                    value={price}
+                    onChange={(e) => setPrice(e.target.value)}
+                  />
+                </div>
+
+                {/* Serial Number */}
+                <div className={inputStyles.formGroup}>
+                  <label htmlFor="serialNumber" className={inputStyles.label}>Nomor Seri / SN</label>
+                  <input
+                    id="serialNumber"
+                    type="text"
+                    className={inputStyles.input}
+                    placeholder="Contoh: E702411547000444"
+                    value={serialNumber}
+                    onChange={(e) => setSerialNumber(e.target.value)}
                   />
                 </div>
 
@@ -548,14 +594,23 @@ export default function AssetDetailModal({
                     </span>
                   </div>
 
-                  <div className={styles.item}>
-                    <span className={styles.label}>Brand / Model</span>
-                    <span className={styles.value}>{brandModel || '-'}</span>
-                  </div>
+
 
                   <div className={styles.item}>
                     <span className={styles.label}>Tahun Pembelian</span>
                     <span className={styles.value}>{asset?.purchaseYear || '-'}</span>
+                  </div>
+
+                  <div className={styles.item}>
+                    <span className={styles.label}>Harga Pembelian</span>
+                    <span className={styles.value}>
+                      {asset?.price != null ? `Rp ${Number(asset.price).toLocaleString('id-ID')}` : '-'}
+                    </span>
+                  </div>
+
+                  <div className={styles.item}>
+                    <span className={styles.label}>Nomor Seri (SN)</span>
+                    <span className={styles.value}>{asset?.serialNumber || '-'}</span>
                   </div>
                 </div>
               </div>
@@ -620,7 +675,6 @@ export default function AssetDetailModal({
               {/* Footer Buttons for view-mode */}
               {user.role !== 'VIEWER' && (
                 <div className={styles.footer} style={{ borderTop: 'none', padding: 'var(--space-2) 0 0 0' }}>
-                  {/* Superadmin or branch officers can archive/delete */}
                   <button
                     type="button"
                     onClick={() => setIsDeleting(true)}

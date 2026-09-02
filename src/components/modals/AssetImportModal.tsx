@@ -45,7 +45,8 @@ export default function AssetImportModal({
     name: string;
     category: string;
     assetTag: string;
-    brandModel: string;
+    price: string;
+    serialNumber: string;
     pic: string;
     locationDetail: string;
     status: string;
@@ -103,7 +104,15 @@ export default function AssetImportModal({
       const idxStatus = headers.findIndex(h => h.includes('status') || h.includes('kondisi'));
       const idxNotes = headers.findIndex(h => h.includes('catatan') || h.includes('notes') || h.includes('keterangan'));
       const idxBranch = headers.findIndex(h => h.includes('cabang') || h.includes('branch'));
-      const idxYear = headers.findIndex(h => h.includes('tahun') || h.includes('year') || h === 'thn' || h.includes('pembelian'));
+    const idxYear = headers.findIndex(h => h.includes('tahun') || h.includes('year') || h === 'thn' || h.includes('pembelian'));
+    const idxPrice = headers.findIndex(h => h.includes('harga') || h.includes('price') || h.includes('nilai'));
+      const idxSerialNumber = headers.findIndex(h =>
+        h === 'sn' ||
+        h === 's/n' ||
+        h === 'serial number' ||
+        h === 'nomor seri' ||
+        h === 'serial_number'
+      );
 
       // Validate required columns
       if (idxName === -1 || idxCategory === -1 || idxYear === -1) {
@@ -130,6 +139,9 @@ export default function AssetImportModal({
         const notesRaw = idxNotes !== -1 ? String(row[idxNotes] || '').trim() : '';
         const branchRaw = idxBranch !== -1 ? String(row[idxBranch] || '').trim() : '';
         const yearRaw = idxYear !== -1 ? String(row[idxYear] || '').trim() : '';
+        const priceRaw = idxPrice !== -1 ? String(row[idxPrice] || '').trim() : '';
+        const cleanPrice = priceRaw ? priceRaw.replace(/[^0-9]/g, '') : '';
+        const serialNumberRaw = idxSerialNumber !== -1 ? String(row[idxSerialNumber] || '').trim() : '';
 
         // Validation checks
         const errors: string[] = [];
@@ -143,7 +155,7 @@ export default function AssetImportModal({
           if (categoryNormalized) {
             categoryDisplay = categoryNormalized;
           } else {
-            errors.push(`Kategori '${categoryRaw}' tidak valid (Gunakan salah satu dari: Elektronik, Peralatan Kantor, Mebel & Furniture, Kendaraan, Peralatan Dapur & Mess, Perkakas & Alat Berat, Lain-lain)`);
+            errors.push(`Kategori '${categoryRaw}' tidak valid (Gunakan salah satu dari: Laptop & Komputer, Elektronik, Peralatan Kantor, Mebel & Furniture, Kendaraan, Peralatan Dapur & Mess, Perkakas & Alat Berat, Lain-lain)`);
             categoryDisplay = categoryRaw;
           }
         }
@@ -212,7 +224,8 @@ export default function AssetImportModal({
           name: nameRaw,
           category: categoryDisplay,
           assetTag: tagRaw,
-          brandModel: brandRaw,
+          price: cleanPrice,
+          serialNumber: serialNumberRaw,
           pic: picRaw,
           locationDetail: locationRaw,
           status: statusDisplay,
@@ -280,21 +293,47 @@ export default function AssetImportModal({
   };
 
   const handleUpload = async () => {
-    if (!csvText || loading) return;
+    if (loading) return;
+    // Filter hanya baris yang tidak memiliki error untuk dikirim
+    const validRows = previewRows.filter(row => row.errors.length === 0);
+    if (validRows.length === 0) {
+      setGeneralError('Tidak ada data valid untuk diimpor. Periksa kembali data yang akan diunggah.');
+      return;
+    }
+    
     setLoading(true);
     setGeneralError(null);
 
     try {
-      const res = await importAssets(csvText);
+      // Buat payload sesuai format yang dibutuhkan backend
+      const payload = validRows.map(row => ({
+        name: row.name,
+        category: row.category,
+        assetTag: row.assetTag,
+        pic: row.pic,
+        locationDetail: row.locationDetail,
+        status: row.status,
+        branch: row.branch,
+        notes: row.notes,
+        purchaseYear: row.purchaseYear,
+        price: row.price ? parseFloat(row.price) : null,
+        serialNumber: row.serialNumber || undefined,
+      }));
 
-      if (res.success && res.data) {
+      const res = await importAssets(payload);
+
+      // Hanya tampilkan layar sukses jika benar-benar berhasil mengimpor semua data
+      if (res.success && res.data && res.data.importedCount > 0) {
         setResult(res.data);
       } else {
-        setGeneralError(res.error || 'Terjadi kesalahan saat mengimpor data.');
+        // Gabungkan error utama dengan detail error per baris jika ada
+        let errorMessage = res.error || 'Terjadi kesalahan saat mengimpor data.';
+        
         if (res.data?.errors && res.data.errors.length > 0) {
-          // Sync server-side validation error array
-          setGeneralError(res.error + ' Periksa daftar error baris.');
+          errorMessage += ' Detail error: ' + res.data.errors.join(' | ');
         }
+        
+        setGeneralError(errorMessage);
       }
     } catch (err) {
       console.error('Bulk import submit error:', err);
@@ -406,6 +445,8 @@ export default function AssetImportModal({
                     • <b>Lokasi / Location Detail</b>: Penempatan detail barang (e.g. Kantor Utama Lt.1).<br/>
                     • <b>Status / Kondisi</b>: Gunakan salah satu: <i>Aktif, Rusak, Servis, Hilang</i> (default: Aktif).<br/>
                     • <b>Catatan / Notes</b>: Catatan tambahan.<br/>
+                    <span><b>Harga / Price</b>: Harga atau nilai pembelian barang (misal: 1200000 atau 1.200.000).</span><br/>
+                    <span>• <b>Nomor Seri / SN</b>: Nomor serial spesifik barang (opsional).</span><br/>
                     {user.role === 'SUPERADMIN' && (
                       <span>• <b>Cabang / Branch</b>: Nama atau Kode Cabang (Khusus Superadmin, e.g. HO, MESS-A).</span>
                     )}
@@ -451,7 +492,7 @@ export default function AssetImportModal({
                       <th className={styles.th}>Tag Aset</th>
                       <th className={styles.th}>Nama Aset</th>
                       <th className={styles.th}>Kategori</th>
-                      <th className={styles.th}>Brand</th>
+                      <th className={styles.th}>Harga</th>
                       <th className={styles.th}>Tahun</th>
                       <th className={styles.th}>PIC</th>
                       <th className={styles.th}>Lokasi</th>
@@ -473,7 +514,7 @@ export default function AssetImportModal({
                           <td className={styles.td} style={{ fontFamily: 'monospace' }}>{row.assetTag || '-'}</td>
                           <td className={styles.td} style={{ fontWeight: 600, color: hasErr && !row.name ? 'var(--color-danger)' : 'inherit' }}>{row.name || '(Kosong)'}</td>
                           <td className={styles.td} style={{ color: hasErr && !row.category ? 'var(--color-danger)' : 'inherit' }}>{row.category || '(Kosong)'}</td>
-                          <td className={styles.td}>{row.brandModel || '-'}</td>
+                          <td className={styles.td}>{row.price ? `Rp ${Number(row.price).toLocaleString('id-ID')}` : '-'}</td>
                           <td className={styles.td} style={{ color: hasErr && !row.purchaseYear ? 'var(--color-danger)' : 'inherit' }}>{row.purchaseYear || '(Kosong)'}</td>
                           <td className={styles.td}>{row.pic || '-'}</td>
                           <td className={styles.td}>{row.locationDetail || '-'}</td>

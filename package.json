@@ -22,6 +22,7 @@
     "date-fns": "^4.1.0",
     "dotenv": "^17.4.2",
     "formidable": "^3.5.4",
+    "html-to-image": "^1.11.13",
     "html2canvas": "^1.4.1",
     "jose": "^6.2.3",
     "jspdf": "^4.2.1",
@@ -30,7 +31,9 @@
     "pg": "^8.20.0",
     "prisma": "^7.8.0",
     "react": "19.2.4",
+    "react-barcode": "^1.6.1",
     "react-dom": "19.2.4",
+    "react-qr-code": "^2.2.0",
     "recharts": "^3.8.1",
     "xlsx": "^0.18.5"
   },

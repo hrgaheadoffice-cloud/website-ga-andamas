@@ -79,36 +79,36 @@ model SubCategory {
 
 /// Transaksi pengeluaran GA
 model Transaction {
-  id              Int             @id @default(autoincrement())
-  branchId        Int             @map("branch_id")
-  userId          Int             @map("user_id")
-  categoryId      Int             @map("category_id")
-  subCategoryId   Int?            @map("sub_category_id")
-  transactionDate DateTime        @map("transaction_date") @db.Date
-  description     String          @db.VarChar(255)
-  quantity        Decimal         @db.Decimal(10, 2)
-  unit            String          @db.VarChar(20)
-  pricePerUnit    Decimal         @map("price_per_unit") @db.Decimal(15, 2)
-  totalAmount     Decimal         @map("total_amount") @db.Decimal(15, 2)
-  paymentMethod   PaymentMethod   @map("payment_method")
-  vendor          String?         @db.VarChar(100)
-  receiptPath     String?         @map("receipt_path") @db.VarChar(500)
+  id              Int           @id @default(autoincrement())
+  branchId        Int           @map("branch_id")
+  userId          Int           @map("user_id")
+  categoryId      Int           @map("category_id")
+  subCategoryId   Int?          @map("sub_category_id")
+  transactionDate DateTime      @map("transaction_date") @db.Date
+  description     String        @db.VarChar(255)
+  quantity        Decimal       @db.Decimal(10, 2)
+  unit            String        @db.VarChar(20)
+  pricePerUnit    Decimal       @map("price_per_unit") @db.Decimal(15, 2)
+  totalAmount     Decimal       @map("total_amount") @db.Decimal(15, 2)
+  paymentMethod   PaymentMethod @map("payment_method")
+  vendor          String?       @db.VarChar(100)
+  receiptPath     String?       @map("receipt_path") @db.VarChar(500)
   notes           String?
-  customFields    Json?           @map("custom_fields")
-  createdAt       DateTime        @default(now()) @map("created_at") @db.Timestamptz(6)
-  updatedAt       DateTime        @updatedAt @map("updated_at") @db.Timestamptz(6)
-  beritaAcara     String?         @unique @map("berita_acara") @db.VarChar(50)
-  discountPerUnit Decimal?        @map("discount_per_unit") @db.Decimal(15, 2)
-  discountTotal   Decimal?        @map("discount_total") @db.Decimal(15, 2)
+  customFields    Json?         @map("custom_fields")
+  createdAt       DateTime      @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt       DateTime      @updatedAt @map("updated_at") @db.Timestamptz(6)
+  beritaAcara     String?       @unique @map("berita_acara") @db.VarChar(50)
+  discountPerUnit Decimal?      @map("discount_per_unit") @db.Decimal(15, 2)
+  discountTotal   Decimal?      @map("discount_total") @db.Decimal(15, 2)
   location        Location?
-  taxAmount       Decimal?        @map("tax_amount") @db.Decimal(15, 2)
-  taxNote         String?         @map("tax_note") @db.VarChar(50)
-  invoiceNumber   String?         @map("invoice_number") @db.VarChar(100)
+  taxAmount       Decimal?      @map("tax_amount") @db.Decimal(15, 2)
+  taxNote         String?       @map("tax_note") @db.VarChar(50)
+  invoiceNumber   String?       @map("invoice_number") @db.VarChar(100)
   ongoingPayment  OngoingPayment?
-  branch          Branch          @relation(fields: [branchId], references: [id])
-  category        Category        @relation(fields: [categoryId], references: [id])
-  subCategory     SubCategory?    @relation(fields: [subCategoryId], references: [id])
-  user            User            @relation(fields: [userId], references: [id])
+  branch          Branch        @relation(fields: [branchId], references: [id])
+  category        Category      @relation(fields: [categoryId], references: [id])
+  subCategory     SubCategory?  @relation(fields: [subCategoryId], references: [id])
+  user            User          @relation(fields: [userId], references: [id])
 
   @@index([branchId, transactionDate(sort: Desc)], map: "idx_tx_branch_date")
   @@index([categoryId], map: "idx_tx_category")
@@ -166,7 +166,6 @@ model RecurringBill {
   categoryId      Int                    @map("category_id")
   userId          Int                    @map("user_id")
   description     String                 @db.VarChar(255)
-  /// Null = variable-amount bill (user enters actual at payment time)
   amountExpected  Decimal?               @map("amount_expected") @db.Decimal(15, 2)
   frequency       RecurringBillFrequency
   nextDueDate     DateTime               @map("next_due_date") @db.Date
@@ -209,10 +208,13 @@ model Asset {
   userId         Int         @map("user_id")
   assetTag       String?     @unique @map("asset_tag") @db.VarChar(50)
   name           String      @db.VarChar(100)
-  brandModel     String?     @map("brand_model") @db.VarChar(100)
   category       String      @db.VarChar(100)
   locationDetail String?     @map("location_detail") @db.VarChar(255)
   pic            String?     @db.VarChar(100)
+  serialNumber   String?     @map("serial_number") @db.VarChar(100)
+  price          Decimal?    @db.Decimal(15, 2)
+  labelStatus    String?     @default("BELUM") @map("label_status") @db.VarChar(20)
+  qrCode         String?     @map("qr_code")
   status         AssetStatus @default(AKTIF)
   imagePath      String?     @map("image_path") @db.VarChar(500)
   notes          String?
@@ -222,12 +224,33 @@ model Asset {
   purchaseYear   Int?        @map("purchase_year")
   branch         Branch      @relation(fields: [branchId], references: [id])
   user           User        @relation(fields: [userId], references: [id])
+  basts          Bast[]
 
   @@index([branchId])
   @@index([category])
   @@index([status])
   @@index([archivedAt])
   @@map("assets")
+}
+
+/// Berita Acara Serah Terima (BAST) Aset
+model Bast {
+  id            Int      @id @default(autoincrement())
+  bastNumber    String   @unique @map("bast_number") @db.VarChar(100)
+  assetId       Int      @map("asset_id")
+  handoverDate  DateTime @map("handover_date") @db.Date
+  giverName     String   @map("giver_name") @db.VarChar(100)
+  recipientName String   @map("recipient_name") @db.VarChar(100)
+  division      String?  @db.VarChar(100)
+  position      String?  @db.VarChar(100)
+  notes         String?
+  createdBy     String   @map("created_by") @db.VarChar(100)
+  filePath      String?  @map("file_path") @db.VarChar(255)
+  createdAt     DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  asset         Asset    @relation(fields: [assetId], references: [id], onDelete: Cascade)
+
+  @@index([assetId])
+  @@map("basts")
 }
 
 enum UserRole {

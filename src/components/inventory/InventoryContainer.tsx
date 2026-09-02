@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useMemo, useRef } from 'react';
 import { 
   Search, 
   Filter, 
@@ -8,24 +8,70 @@ import {
   Upload, 
   ChevronLeft, 
   ChevronRight, 
-  Image as ImageIcon,
   HelpCircle,
-  FileSpreadsheet,
   ArrowUpDown,
   ArrowLeft,
   Building2,
   CheckCircle2,
   AlertTriangle,
-  Wrench
+  Wrench,
+  QrCode,
+  Eye,
+  Handshake,
+  Tag,
+  Check,
+  X,
+  Download,
+  PieChart
 } from 'lucide-react';
-import { getAssets } from '@/lib/actions/assets';
-import type { AssetWithRelations, AssetFilters, BranchAssetStats } from '@/lib/actions/assets';
+import * as XLSX from 'xlsx';
+import { getAssets, getAssetsForExport, toggleAssetLabelStatus } from '@/lib/actions/assets';
+import type { AssetWithRelations, BranchAssetStats } from '@/lib/actions/assets';
 import type { Branch, AssetStatus } from '@prisma/client';
 import { type AuthUser, ASSET_CATEGORIES } from '@/types';
 import AssetDetailModal from '@/components/modals/AssetDetailModal';
 import AssetImportModal from '@/components/modals/AssetImportModal';
+import QrLabelModal from '@/components/modals/QrLabelModal';
 import styles from '@/app/(dashboard)/inventaris/inventaris.module.css';
 
+function formatRupiah(amount: number | null | undefined): string {
+  if (amount == null || isNaN(amount)) return 'Rp 0';
+  return new Intl.NumberFormat('id-ID', {
+    style: 'currency',
+    currency: 'IDR',
+    maximumFractionDigits: 0,
+  }).format(amount);
+}
+
+function getDisplayAssetTag(asset: AssetWithRelations, index: number): string {
+  if (asset.assetTag && asset.assetTag.trim() !== '') {
+    return asset.assetTag;
+  }
+  
+  const branchCode = asset.branch?.code || 'HO';
+  
+  const catMap: Record<string, string> = {
+    'Elektronik': 'ELK',
+    'Komputer / Laptop': 'KOM',
+    'Komputer': 'KOM',
+    'Laptop': 'KOM',
+    'Peralatan Kantor': 'TLS',
+    'Mebel / Perabotan': 'FURN',
+    'Kendaraan': 'KND'
+  };
+  
+  const catCode = (asset.category && catMap[asset.category]) 
+    ? catMap[asset.category] 
+    : (asset.category ? asset.category.substring(0, 3).toUpperCase() : 'AST');
+
+  const date = asset.createdAt ? new Date(asset.createdAt) : new Date();
+  const ROMAN_MONTHS = ['I', 'II', 'III', 'IV', 'V', 'VI', 'VII', 'VIII', 'IX', 'X', 'XI', 'XII'];
+  const monthRoman = ROMAN_MONTHS[date.getMonth()];
+  const yearTwoDigits = date.getFullYear().toString().slice(-2);
+  const formattedSeq = String(asset.id || index + 1).padStart(3, '0');
+
+  return `${branchCode}/${catCode}/${monthRoman}/${yearTwoDigits}/${formattedSeq}`;
+}
 
 interface InventoryContainerProps {
   user: AuthUser;
@@ -33,43 +79,71 @@ interface InventoryContainerProps {
   branchStats?: BranchAssetStats[];
 }
 
-/* ------------------------------------------------------------------ */
-/*  Small presentational helpers (pure UI, no data/logic dependency)  */
-/* ------------------------------------------------------------------ */
-
 interface DonutSlice {
   label: string;
   value: number;
   color: string;
 }
 
-/**
- * Lightweight SVG donut chart — no external chart library needed.
- * Pure presentational component: takes numbers in, draws arcs out.
- */
-function StatusDonutChart({ slices, centerLabel, centerValue }: {
+const EXTENDED_CATEGORIES = [
+  'Komputer / Laptop',
+  ...ASSET_CATEGORIES.filter(c => c !== 'Komputer / Laptop')
+];
+
+const BRANCH_ACCENTS = [
+  { solid: '#4f46e5', soft: '#eef2ff', text: '#4338ca' },
+  { solid: '#0ea5e9', soft: '#f0f9ff', text: '#0369a1' },
+  { solid: '#059669', soft: '#ecfdf5', text: '#047857' },
+  { solid: '#d97706', soft: '#fffbeb', text: '#b45309' },
+  { solid: '#db2777', soft: '#fdf2f8', text: '#be185d' },
+  { solid: '#7c3aed', soft: '#f5f3ff', text: '#6d28d9' },
+  { solid: '#0d9488', soft: '#f0fdfa', text: '#0f766e' },
+];
+
+const CATEGORY_CHART_COLORS = [
+  '#ef4444', '#f97316', '#eab308', '#84cc16', '#22c55e',
+  '#14b8a6', '#06b6d4', '#3b82f6', '#6366f1', '#8b5cf6',
+  '#d946ef', '#ec4899', '#64748b', '#78716c', '#0ea5e9',
+];
+
+function CategoryDonutChart({ slices, totalValue }: {
   slices: DonutSlice[];
-  centerLabel: string;
-  centerValue: number;
+  totalValue: number;
 }) {
-  const total = slices.reduce((sum, s) => sum + s.value, 0);
-  const radius = 60;
-  const stroke = 22;
+  const [hoverIdx, setHoverIdx] = useState<number | null>(null);
+  const [tooltipPos, setTooltipPos] = useState<{ x: number; y: number }>({ x: 0, y: 0 });
+  const containerRef = useRef<HTMLDivElement>(null);
+
+  const total = totalValue;
+  const size = 220;
+  const center = size / 2;
+  const radius = 82;
+  const stroke = 30;
   const circumference = 2 * Math.PI * radius;
   let cumulative = 0;
 
+  const handleSliceMove = (e: React.MouseEvent, idx: number) => {
+    const rect = containerRef.current?.getBoundingClientRect();
+    if (!rect) return;
+    setTooltipPos({ x: e.clientX - rect.left, y: e.clientY - rect.top });
+    setHoverIdx(idx);
+  };
+
+  const hoveredSlice = hoverIdx !== null ? slices[hoverIdx] : null;
+  const hoveredPct = hoveredSlice && total > 0 ? Math.round((hoveredSlice.value / total) * 1000) / 10 : 0;
+
   return (
-    <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-6)', flexWrap: 'wrap' }}>
-      <div style={{ position: 'relative', width: 160, height: 160, flexShrink: 0 }}>
-        <svg viewBox="0 0 160 160" width={160} height={160} style={{ transform: 'rotate(-90deg)' }}>
+    <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 'var(--space-5)', width: '100%' }}>
+      <div ref={containerRef} style={{ position: 'relative', width: size, height: size, flexShrink: 0 }}>
+        <svg viewBox={`0 0 ${size} ${size}`} width={size} height={size} style={{ transform: 'rotate(-90deg)' }}>
           <circle
-            cx={80}
-            cy={80}
+            cx={center}
+            cy={center}
             r={radius}
             fill="none"
             stroke="var(--color-border, #e2e8f0)"
             strokeWidth={stroke}
-            opacity={total === 0 ? 1 : 0.25}
+            opacity={total === 0 ? 1 : 0.2}
           />
           {total > 0 && slices.map((slice, idx) => {
             if (slice.value <= 0) return null;
@@ -78,19 +152,26 @@ function StatusDonutChart({ slices, centerLabel, centerValue }: {
             const gap = circumference - dash;
             const offset = -cumulative * circumference;
             cumulative += fraction;
+            const isDimmed = hoverIdx !== null && hoverIdx !== idx;
             return (
               <circle
                 key={idx}
-                cx={80}
-                cy={80}
+                cx={center}
+                cy={center}
                 r={radius}
                 fill="none"
                 stroke={slice.color}
-                strokeWidth={stroke}
+                strokeWidth={hoverIdx === idx ? stroke + 5 : stroke}
                 strokeDasharray={`${dash} ${gap}`}
                 strokeDashoffset={offset}
                 strokeLinecap="butt"
-                style={{ transition: 'stroke-dasharray 0.4s ease' }}
+                opacity={isDimmed ? 0.32 : 1}
+                style={{
+                  transition: 'stroke-dasharray 0.4s ease, opacity 0.2s ease, stroke-width 0.15s ease',
+                  cursor: 'pointer',
+                }}
+                onMouseMove={(e) => handleSliceMove(e, idx)}
+                onMouseLeave={() => setHoverIdx(null)}
               />
             );
           })}
@@ -102,33 +183,75 @@ function StatusDonutChart({ slices, centerLabel, centerValue }: {
           flexDirection: 'column',
           alignItems: 'center',
           justifyContent: 'center',
+          pointerEvents: 'none',
         }}>
-          <span style={{ fontSize: 'var(--text-xl)', fontWeight: 700, lineHeight: 1 }}>{centerValue}</span>
-          <span style={{ fontSize: 'var(--text-xs)', color: 'var(--color-text-muted)', marginTop: 4 }}>{centerLabel}</span>
+          <span style={{ fontSize: 'var(--text-xs)', color: 'var(--color-text-muted)', fontWeight: 500 }}>Total Aset:</span>
+          <span style={{ fontSize: '30px', fontWeight: 800, lineHeight: 1, marginTop: 4, color: '#0f172a' }}>{total}</span>
         </div>
+
+        {hoveredSlice && (
+          <div style={{
+            position: 'absolute',
+            left: Math.min(Math.max(tooltipPos.x + 14, 4), size - 12),
+            top: Math.min(Math.max(tooltipPos.y - 12, 4), size - 12),
+            transform: 'translate(0, -100%)',
+            background: '#0f172a',
+            color: '#ffffff',
+            padding: '8px 12px',
+            borderRadius: 10,
+            fontSize: 'var(--text-xs)',
+            lineHeight: 1.4,
+            boxShadow: '0 12px 26px -10px rgba(15,23,42,0.5)',
+            pointerEvents: 'none',
+            whiteSpace: 'nowrap',
+            zIndex: 10,
+          }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontWeight: 700 }}>
+              <span style={{ width: 8, height: 8, borderRadius: '50%', backgroundColor: hoveredSlice.color, flexShrink: 0 }} />
+              {hoveredSlice.label}
+            </div>
+            <div style={{ opacity: 0.85, marginTop: 2 }}>{hoveredSlice.value} unit &middot; {hoveredPct}%</div>
+          </div>
+        )}
       </div>
 
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-2)', minWidth: 160 }}>
-        {slices.map((slice, idx) => {
-          const pct = total > 0 ? Math.round((slice.value / total) * 100) : 0;
-          return (
-            <div key={idx} style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-2)' }}>
-              <span style={{
-                width: 10, height: 10, borderRadius: 3, flexShrink: 0,
-                backgroundColor: slice.color,
-              }} />
-              <span style={{ fontSize: 'var(--text-sm)', color: 'var(--color-text-muted)', flex: 1 }}>{slice.label}</span>
-              <span style={{ fontSize: 'var(--text-sm)', fontWeight: 700 }}>{slice.value}</span>
-              <span style={{ fontSize: 'var(--text-xs)', color: 'var(--color-text-muted)', width: 34, textAlign: 'right' }}>{pct}%</span>
-            </div>
-          );
-        })}
+      <div style={{
+        display: 'grid',
+        gridTemplateColumns: 'repeat(2, minmax(140px, 1fr))',
+        gap: 'var(--space-1) var(--space-6)',
+        width: '100%',
+      }}>
+        {slices.map((slice, idx) => (
+          <div
+            key={idx}
+            onMouseEnter={() => setHoverIdx(idx)}
+            onMouseLeave={() => setHoverIdx(null)}
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: 8,
+              padding: '5px 8px',
+              borderRadius: 8,
+              backgroundColor: hoverIdx === idx ? 'rgba(99, 102, 241, 0.08)' : 'transparent',
+              transition: 'background-color 0.15s ease',
+              cursor: 'default',
+            }}
+          >
+            <span style={{
+              width: 9, height: 9, borderRadius: '50%', flexShrink: 0,
+              backgroundColor: slice.color,
+              boxShadow: hoverIdx === idx ? `0 0 0 3px ${slice.color}33` : 'none',
+              transition: 'box-shadow 0.15s ease',
+            }} />
+            <span style={{ fontSize: 'var(--text-xs)', color: '#475569', flex: 1, fontWeight: hoverIdx === idx ? 700 : 500 }}>{slice.label}</span>
+            <span style={{ fontSize: 'var(--text-xs)', fontWeight: 700, color: '#0f172a' }}>{slice.value}</span>
+          </div>
+        ))}
       </div>
     </div>
   );
 }
 
-/** Thin proportional bar used inside each branch card — quick visual read of status mix. */
 function MiniStackedBar({ aktif, servis, rusak, hilang }: {
   aktif: number; servis: number; rusak: number; hilang: number;
 }) {
@@ -158,32 +281,108 @@ function MiniStackedBar({ aktif, servis, rusak, hilang }: {
   );
 }
 
-/** KPI card with an inline percentage-of-total progress bar. */
-function KpiCard({ icon, iconClass, label, value, valueColor, percentOfTotal, barColor }: {
+function KpiCard({ icon, label, value, valueColor, percentOfTotal, barColor, iconBg, caption }: {
   icon: React.ReactNode;
-  iconClass: string;
   label: string;
   value: number;
   valueColor?: string;
   percentOfTotal: number;
   barColor: string;
+  gradient?: string;
+  iconBg: string;
+  caption?: string;
 }) {
   return (
-    <div className="stat-card" style={{ padding: 'var(--space-4)', display: 'flex', flexDirection: 'column', gap: 'var(--space-3)' }}>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-3)' }}>
-        <div className={`stat-icon ${iconClass}`} style={{ width: '40px', height: '40px' }}>
+    <div
+      className="iac-kpi-card"
+      style={{
+        position: 'relative',
+        padding: 'var(--space-4)',
+        display: 'flex',
+        flexDirection: 'column',
+        gap: 'var(--space-2)',
+        borderRadius: 16,
+        background: '#ffffff',
+        border: '1px solid #eef1f6',
+        boxShadow: '0 6px 18px -14px rgba(15, 23, 42, 0.25)',
+        overflow: 'hidden',
+        isolation: 'isolate',
+      }}
+    >
+      {/* decorative vector blob — soft tinted shadow tucked into the corner */}
+      <div
+        aria-hidden="true"
+        style={{
+          position: 'absolute',
+          top: -34,
+          right: -34,
+          width: 110,
+          height: 110,
+          borderRadius: '50%',
+          background: barColor,
+          opacity: 0.08,
+          zIndex: 0,
+          pointerEvents: 'none',
+        }}
+      />
+      <div
+        aria-hidden="true"
+        style={{
+          position: 'absolute',
+          top: -6,
+          right: 14,
+          width: 46,
+          height: 46,
+          borderRadius: '50%',
+          background: barColor,
+          opacity: 0.06,
+          zIndex: 0,
+          pointerEvents: 'none',
+        }}
+      />
+
+      <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 'var(--space-3)', position: 'relative', zIndex: 1 }}>
+        <div style={{
+          width: '44px',
+          height: '44px',
+          borderRadius: '12px',
+          background: iconBg,
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          color: '#ffffff',
+          flexShrink: 0,
+          boxShadow: `0 8px 16px -8px ${barColor}66`,
+        }}>
           {icon}
         </div>
-        <div className="stat-content">
-          <p className="stat-label" style={{ fontSize: 'var(--text-xs)' }}>{label}</p>
-          <h3 className="stat-value" style={{ fontSize: 'var(--text-xl)', color: valueColor }}>{value}</h3>
-        </div>
+        <span style={{
+          fontSize: '11px',
+          fontWeight: 700,
+          color: barColor,
+          background: `${barColor}14`,
+          padding: '3px 8px',
+          borderRadius: 999,
+          whiteSpace: 'nowrap',
+        }}>
+          {Math.round(Math.min(100, percentOfTotal))}%
+        </span>
       </div>
-      <div style={{ height: 6, borderRadius: 999, backgroundColor: 'var(--color-border, #e2e8f0)', overflow: 'hidden' }}>
+
+      <div style={{ position: 'relative', zIndex: 1 }}>
+        <p style={{ fontSize: 'var(--text-xs)', margin: 0, color: '#64748b', fontWeight: 600 }}>{label}</p>
+        <h3 style={{ fontSize: 'var(--text-xl)', margin: '2px 0 0 0', color: valueColor || '#0f172a', fontWeight: 800 }}>{value}</h3>
+        {caption && (
+          <p style={{ fontSize: '11px', margin: '4px 0 0 0', color: '#94a3b8', fontWeight: 500 }}>{caption}</p>
+        )}
+      </div>
+
+      <div style={{ height: 6, borderRadius: 999, backgroundColor: '#f1f5f9', overflow: 'hidden', position: 'relative', zIndex: 1 }}>
         <div style={{
           width: `${Math.min(100, percentOfTotal)}%`,
           height: '100%',
           backgroundColor: barColor,
+          borderRadius: 999,
           transition: 'width 0.4s ease',
         }} />
       </div>
@@ -191,10 +390,7 @@ function KpiCard({ icon, iconClass, label, value, valueColor, percentOfTotal, ba
   );
 }
 
-/* ------------------------------------------------------------------ */
-
 export default function InventoryContainer({ user, branches, branchStats = [] }: InventoryContainerProps) {
-  // Filter States
   const [search, setSearch] = useState<string>('');
   const [debouncedSearch, setDebouncedSearch] = useState<string>('');
   const [branchId, setBranchId] = useState<string>('');
@@ -203,36 +399,30 @@ export default function InventoryContainer({ user, branches, branchStats = [] }:
   const [page, setPage] = useState<number>(1);
   const [refreshTrigger, setRefreshTrigger] = useState<number>(0);
 
-  // Sorting States
   const [sortBy, setSortBy] = useState<string>('createdAt');
   const [sortOrder, setSortOrder] = useState<'asc' | 'desc'>('desc');
 
-  // Advanced Filters toggle
   const [showAdvancedFilters, setShowAdvancedFilters] = useState<boolean>(false);
 
-  // Queries States
   const [assets, setAssets] = useState<AssetWithRelations[]>([]);
   const [totalCount, setTotalCount] = useState<number>(0);
   const [totalPages, setTotalPages] = useState<number>(0);
   const [loading, setLoading] = useState<boolean>(true);
   const [error, setError] = useState<string | null>(null);
 
-  // Modal States
+  const [categoryAssets, setCategoryAssets] = useState<AssetWithRelations[]>([]);
+  const [categoryStatsLoading, setCategoryStatsLoading] = useState<boolean>(true);
+
   const [selectedAsset, setSelectedAsset] = useState<AssetWithRelations | null>(null);
   const [detailModalOpen, setDetailModalOpen] = useState<boolean>(false);
+  const [qrLabelModalOpen, setQrLabelModalOpen] = useState<boolean>(false);
   const [createMode, setCreateMode] = useState<boolean>(false);
   const [importModalOpen, setImportModalOpen] = useState<boolean>(false);
+  const [togglingLabelId, setTogglingLabelId] = useState<number | null>(null);
+  const [exporting, setExporting] = useState<boolean>(false);
 
+  const activeFiltersCount = [branchId, status, category].filter(Boolean).length;
 
-
-  // Active filters count
-  const activeFiltersCount = [
-    branchId,
-    status,
-    category,
-  ].filter(Boolean).length;
-
-  // 1. Debounce Search queries
   useEffect(() => {
     const handler = setTimeout(() => {
       setDebouncedSearch(search);
@@ -242,13 +432,11 @@ export default function InventoryContainer({ user, branches, branchStats = [] }:
     return () => clearTimeout(handler);
   }, [search]);
 
-  // Reset page when other filters change
   const handleFilterChange = (setter: (val: string) => void, val: string) => {
     setter(val);
     setPage(1);
   };
 
-  // 2. Query assets from Server Action
   useEffect(() => {
     const loadAssets = async () => {
       setLoading(true);
@@ -269,8 +457,6 @@ export default function InventoryContainer({ user, branches, branchStats = [] }:
           setAssets(result.data.assets);
           setTotalCount(result.data.totalCount);
           setTotalPages(result.data.totalPages);
-
-
         } else {
           setError(result.error || 'Gagal memuat daftar inventaris.');
         }
@@ -285,7 +471,47 @@ export default function InventoryContainer({ user, branches, branchStats = [] }:
     loadAssets();
   }, [debouncedSearch, branchId, status, category, page, refreshTrigger, sortBy, sortOrder]);
 
-  // Handle header sorting click
+  useEffect(() => {
+    if (user.role !== 'SUPERADMIN') return;
+
+    let cancelled = false;
+
+    const loadCategoryStats = async () => {
+      setCategoryStatsLoading(true);
+      try {
+        const result = await getAssetsForExport();
+        if (!cancelled && result.success && result.assets) {
+          setCategoryAssets(result.assets);
+        }
+      } catch (err) {
+        console.error('Fetch category stats error:', err);
+      } finally {
+        if (!cancelled) setCategoryStatsLoading(false);
+      }
+    };
+
+    loadCategoryStats();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [refreshTrigger, user.role]);
+
+  const categorySlices: DonutSlice[] = useMemo(() => {
+    const counts = new Map<string, number>();
+    for (const asset of categoryAssets) {
+      const key = asset.category && asset.category.trim() !== '' ? asset.category : 'Lainnya';
+      counts.set(key, (counts.get(key) || 0) + 1);
+    }
+    return Array.from(counts.entries())
+      .map(([label, value], idx) => ({
+        label,
+        value,
+        color: CATEGORY_CHART_COLORS[idx % CATEGORY_CHART_COLORS.length],
+      }))
+      .sort((a, b) => b.value - a.value);
+  }, [categoryAssets]);
+
   const handleSort = (field: string) => {
     if (sortBy === field) {
       setSortOrder(prev => prev === 'asc' ? 'desc' : 'asc');
@@ -318,22 +544,222 @@ export default function InventoryContainer({ user, branches, branchStats = [] }:
     setDetailModalOpen(true);
   };
 
+  const isSuperadminDeck = user.role === 'SUPERADMIN' && branchId === '' && search === '';
+
+  const handleExportExcel = async () => {
+    if (exporting) return;
+
+    setExporting(true);
+    try {
+      const result = await getAssetsForExport(branchId ? Number(branchId) : undefined);
+      if (!result.success || !result.assets) {
+        alert(result.error || 'Gagal mengambil data untuk export.');
+        return;
+      }
+
+      const workbook = XLSX.utils.book_new();
+      const columns = (items: AssetWithRelations[]) => items.map((asset, index) => ({
+        No: index + 1,
+        'Kode Aset (Asset Tag)': asset.assetTag || '-',
+        'Nama Barang': asset.name,
+        'Serial Number (S/N)': asset.serialNumber || '-',
+        'User (PIC)': asset.pic || '-',
+        Kategori: asset.category,
+        'Lokasi Detail': asset.locationDetail || '-',
+        'Kondisi / Status': asset.status,
+        'Status Label': asset.labelStatus || 'BELUM',
+        'Harga Beli (Rp)': asset.price != null ? Number(asset.price) : null,
+      }));
+
+      const safeSheetName = (name: string, usedNames: Set<string>) => {
+        const baseName = (name || 'Cabang').replace(/[\\/*?:\[\]]/g, '-').slice(0, 31) || 'Cabang';
+        let sheetName = baseName;
+        let suffix = 1;
+        while (usedNames.has(sheetName)) {
+          const suffixText = `-${suffix++}`;
+          sheetName = `${baseName.slice(0, 31 - suffixText.length)}${suffixText}`;
+        }
+        usedNames.add(sheetName);
+        return sheetName;
+      };
+
+      if (isSuperadminDeck) {
+        const groupedAssets = new Map<string, AssetWithRelations[]>();
+        for (const asset of result.assets) {
+          const groupKey = asset.branch?.code || asset.branch?.name || 'Cabang';
+          const group = groupedAssets.get(groupKey) || [];
+          group.push(asset);
+          groupedAssets.set(groupKey, group);
+        }
+
+        const usedSheetNames = new Set<string>();
+        for (const [groupName, group] of groupedAssets) {
+          const worksheet = XLSX.utils.json_to_sheet(columns(group));
+          XLSX.utils.book_append_sheet(workbook, worksheet, safeSheetName(groupName, usedSheetNames));
+        }
+
+        if (workbook.SheetNames.length === 0) {
+          XLSX.utils.book_append_sheet(workbook, XLSX.utils.json_to_sheet([]), 'Inventaris');
+        }
+        XLSX.writeFile(workbook, 'Inventaris_Semua_Cabang.xlsx');
+      } else {
+        const worksheet = XLSX.utils.json_to_sheet(columns(result.assets));
+        XLSX.utils.book_append_sheet(workbook, worksheet, 'Inventaris');
+        const selectedBranch = branchId
+          ? branches.find(branch => branch.id === Number(branchId))
+          : result.assets[0]?.branch;
+        const branchName = selectedBranch?.code || selectedBranch?.name || 'Semua_Cabang';
+        const safeFileName = branchName.replace(/[\\/:*?"<>|]/g, '_');
+        XLSX.writeFile(workbook, `Inventaris_${safeFileName}.xlsx`);
+      }
+    } catch (error) {
+      console.error('Export Excel error:', error);
+      alert('Gagal membuat file Export Excel.');
+    } finally {
+      setExporting(false);
+    }
+  };
+
+  const handleToggleLabel = async (e: React.MouseEvent, asset: AssetWithRelations) => {
+    e.stopPropagation();
+    if (user.role === 'VIEWER' || togglingLabelId === asset.id) return;
+
+    setTogglingLabelId(asset.id);
+    try {
+      const res = await toggleAssetLabelStatus(asset.id);
+
+      if (res.success) {
+        setRefreshTrigger(prev => prev + 1);
+      } else {
+        alert(res.error || 'Gagal mengubah status label aset.');
+      }
+    } catch (err) {
+      console.error('Failed to toggle label status:', err);
+      alert('Gagal mengubah status label aset.');
+    } finally {
+      setTogglingLabelId(null);
+    }
+  };
+
   const getStatusBadge = (assetStatus: AssetStatus) => {
     switch (assetStatus) {
       case 'AKTIF':
-        return <span className={`${styles.statusBadge} ${styles.badgeActive}`}>Aktif</span>;
+        return (
+          <span style={{
+            backgroundColor: '#16a34a',
+            color: '#ffffff',
+            fontSize: '11px',
+            fontWeight: 700,
+            padding: '3px 10px',
+            borderRadius: '4px',
+            display: 'inline-block'
+          }}>
+            Baik
+          </span>
+        );
       case 'RUSAK':
-        return <span className={`${styles.statusBadge} ${styles.badgeBroken}`}>Rusak</span>;
+        return (
+          <span style={{
+            backgroundColor: '#dc2626',
+            color: '#ffffff',
+            fontSize: '11px',
+            fontWeight: 700,
+            padding: '3px 10px',
+            borderRadius: '4px',
+            display: 'inline-block'
+          }}>
+            Rusak
+          </span>
+        );
       case 'DIPERBAIKI':
-        return <span className={`${styles.statusBadge} ${styles.badgeServicing}`}>Servis</span>;
+        return (
+          <span style={{
+            backgroundColor: '#2563eb',
+            color: '#ffffff',
+            fontSize: '11px',
+            fontWeight: 700,
+            padding: '3px 10px',
+            borderRadius: '4px',
+            display: 'inline-block'
+          }}>
+            Servis
+          </span>
+        );
       case 'HILANG':
-        return <span className={`${styles.statusBadge} ${styles.badgeLost}`}>Hilang</span>;
+        return (
+          <span style={{
+            backgroundColor: '#64748b',
+            color: '#ffffff',
+            fontSize: '11px',
+            fontWeight: 700,
+            padding: '3px 10px',
+            borderRadius: '4px',
+            display: 'inline-block'
+          }}>
+            Hilang
+          </span>
+        );
       default:
         return <span className={styles.statusBadge}>{assetStatus}</span>;
     }
   };
 
-  // Calculate aggregate stats for Superadmin Overview
+  const renderLabelCell = (asset: AssetWithRelations) => {
+    const isLabeled = asset.labelStatus?.toUpperCase() === 'SUDAH';
+    const isLoading = togglingLabelId === asset.id;
+
+    return (
+      <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-start', gap: '4px' }}>
+        <span style={{
+          padding: '4px 10px',
+          borderRadius: '4px',
+          fontSize: '11px',
+          fontWeight: 700,
+          backgroundColor: isLabeled ? '#16a34a' : '#475569',
+          color: '#ffffff',
+          display: 'inline-flex',
+          alignItems: 'center',
+          gap: '4px'
+        }}>
+          <Tag size={12} />
+          {isLabeled ? 'Sudah' : 'Belum'}
+        </span>
+        
+        {user.role !== 'VIEWER' && (
+          <button
+            type="button"
+            disabled={isLoading}
+            onClick={(e) => handleToggleLabel(e, asset)}
+            style={{
+              background: 'none',
+              border: 'none',
+              padding: 0,
+              fontSize: '11px',
+              fontWeight: 600,
+              color: isLabeled ? '#eab308' : '#16a34a',
+              cursor: isLoading ? 'not-allowed' : 'pointer',
+              display: 'inline-flex',
+              alignItems: 'center',
+              gap: '2px',
+              marginTop: '2px',
+              opacity: isLoading ? 0.6 : 1
+            }}
+          >
+            {isLabeled ? (
+              <>
+                <X size={12} /> {isLoading ? 'Proses...' : 'Reset'}
+              </>
+            ) : (
+              <>
+                <Check size={12} /> {isLoading ? 'Proses...' : 'Tandai'}
+              </>
+            )}
+          </button>
+        )}
+      </div>
+    );
+  };
+
   const totalAssetsSum = branchStats?.reduce((acc, curr) => acc + curr.totalCount, 0) || 0;
   const totalAktifSum = branchStats?.reduce((acc, curr) => acc + curr.aktifCount, 0) || 0;
   const totalRusakSum = branchStats?.reduce((acc, curr) => acc + curr.rusakCount, 0) || 0;
@@ -347,36 +773,210 @@ export default function InventoryContainer({ user, branches, branchStats = [] }:
     setPage(1);
   };
 
-  const isSuperadminDeck = user.role === 'SUPERADMIN' && branchId === '' && search === '';
+  const headerThStyle: React.CSSProperties = {
+    backgroundColor: '#343a40',
+    color: '#ffffff',
+    padding: '14px 12px',
+    fontSize: '12px',
+    fontWeight: 700,
+    letterSpacing: '0.5px',
+    textTransform: 'uppercase',
+    border: 'none'
+  };
 
   return (
-    <div className={styles.container}>
-      {/* Header Block */}
-      <header className={styles.headerRow} style={{ display: 'flex', flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 'var(--space-4)' }}>
-        <div>
-          <h2>Inventaris & Aset</h2>
-          <p className="text-muted" style={{ margin: 0 }}>
-            {isSuperadminDeck 
-              ? 'Ringkasan inventaris dan aset operasional di seluruh cabang.'
-              : 'Mencatat, melacak, dan mengalokasikan aset operasional General Affairs.'}
-          </p>
+    <div className={styles.container} style={{ maxWidth: '100%', padding: '0 12px' }}>
+      <style jsx>{`
+        .iac-search-input:focus {
+          border-color: #2563eb !important;
+          background-color: #ffffff !important;
+          box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.12) !important;
+        }
+        .iac-btn-import:hover {
+          background-color: #f8fafc !important;
+          border-color: #94a3b8 !important;
+        }
+        .iac-btn-export:hover {
+          background-color: #15803d !important;
+          transform: translateY(-1px);
+        }
+        .iac-btn-add:hover {
+          filter: brightness(1.08);
+          transform: translateY(-1px);
+        }
+        .iac-back-btn:hover {
+          background-color: #eef2ff !important;
+          border-color: #a5b4fc !important;
+        }
+        .iac-filter-toggle:hover {
+          background-color: #f1f5f9 !important;
+        }
+        .iac-reset-btn:hover {
+          background-color: #fef2f2 !important;
+          border-color: #fecaca !important;
+          color: #dc2626 !important;
+        }
+        .iac-kpi-card {
+          transition: transform 0.2s ease, box-shadow 0.2s ease;
+        }
+        .iac-kpi-card:hover {
+          transform: translateY(-3px);
+          box-shadow: 0 16px 30px -14px rgba(15, 23, 42, 0.3) !important;
+        }
+        .iac-kpi-grid {
+          grid-template-columns: repeat(3, minmax(0, 1fr));
+        }
+        @media (max-width: 900px) {
+          .iac-kpi-grid {
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+          }
+        }
+        @media (max-width: 520px) {
+          .iac-kpi-grid {
+            grid-template-columns: 1fr;
+          }
+        }
+        .iac-overview-grid {
+          grid-template-columns: minmax(340px, 1fr) minmax(420px, 1.25fr);
+        }
+        @media (max-width: 1024px) {
+          .iac-overview-grid {
+            grid-template-columns: 1fr;
+          }
+        }
+        .iac-branch-grid {
+          display: grid;
+          grid-template-columns: repeat(3, minmax(0, 1fr));
+          gap: var(--space-4);
+          margin-top: var(--space-4);
+        }
+        @media (max-width: 1100px) {
+          .iac-branch-grid {
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+          }
+        }
+        @media (max-width: 640px) {
+          .iac-branch-grid {
+            grid-template-columns: 1fr;
+          }
+        }
+        .iac-branch-card {
+          transition: transform 0.22s ease, box-shadow 0.22s ease, border-color 0.22s ease;
+        }
+        .iac-branch-card:hover {
+          transform: translateY(-4px);
+          box-shadow: 0 22px 40px -18px rgba(15, 23, 42, 0.28) !important;
+        }
+        .iac-branch-card:hover .iac-branch-detail-pill {
+          background-color: var(--pill-hover-bg) !important;
+          color: #ffffff !important;
+        }
+        .iac-branch-stat-item {
+          transition: transform 0.15s ease;
+        }
+        .iac-branch-card:hover .iac-branch-stat-item {
+          transform: translateY(-1px);
+        }
+      `}</style>
+
+      <header
+        className={styles.headerRow}
+        style={{
+          display: 'flex',
+          flexDirection: 'row',
+          justifyContent: 'space-between',
+          alignItems: 'center',
+          flexWrap: 'wrap',
+          gap: 'var(--space-4)',
+          marginBottom: '20px',
+          paddingBottom: '20px',
+          borderBottom: '1px solid #e2e8f0',
+        }}
+      >
+        <div style={{ display: 'flex', alignItems: 'flex-start', gap: '14px' }}>
+          <div style={{
+            width: '44px',
+            height: '44px',
+            borderRadius: '12px',
+            background: 'linear-gradient(135deg, #1e293b, #334155)',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            flexShrink: 0,
+            boxShadow: '0 4px 10px -2px rgba(30,41,59,0.35)'
+          }}>
+            <Building2 size={22} color="#ffffff" />
+          </div>
+          <div>
+            <h2 style={{ fontSize: '24px', fontWeight: 800, margin: 0, color: '#0f172a' }}>Inventaris & Aset</h2>
+            <p className="text-muted" style={{ margin: '4px 0 0 0' }}>
+              {isSuperadminDeck 
+                ? 'Ringkasan inventaris dan aset operasional di seluruh cabang.'
+                : 'Mencatat, melacak, dan mengalokasikan aset operasional General Affairs.'}
+            </p>
+          </div>
         </div>
         {user.role !== 'VIEWER' && (
-          <div style={{ display: 'flex', gap: 'var(--space-2)' }}>
+          <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap' }}>
             <button
               type="button"
               onClick={() => setImportModalOpen(true)}
-              className="btn btn-secondary"
-              style={{ display: 'inline-flex', alignItems: 'center', gap: 'var(--space-2)', minHeight: '44px' }}
+              className="btn btn-secondary iac-btn-import"
+              style={{
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: '8px',
+                minHeight: '44px',
+                borderRadius: '10px',
+                border: '1px solid #cbd5e1',
+                backgroundColor: '#ffffff',
+                color: '#334155',
+                fontWeight: 600,
+                transition: 'all 0.15s ease',
+              }}
             >
               <Upload size={18} />
               <span>Import Aset</span>
             </button>
             <button
               type="button"
+              onClick={handleExportExcel}
+              disabled={exporting}
+              className="iac-btn-export"
+              style={{
+                backgroundColor: '#16a34a',
+                color: '#ffffff',
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: '8px',
+                minHeight: '44px',
+                fontWeight: 600,
+                border: 'none',
+                borderRadius: '10px',
+                padding: '0 18px',
+                cursor: exporting ? 'not-allowed' : 'pointer',
+                opacity: exporting ? 0.7 : 1,
+                boxShadow: '0 4px 10px -2px rgba(22,163,74,0.4)',
+                transition: 'all 0.15s ease',
+              }}
+            >
+              <Download size={18} />
+              <span>{exporting ? 'Mengunduh...' : 'Export Excel'}</span>
+            </button>
+            <button
+              type="button"
               onClick={handleCreateClick}
-              className="btn btn-primary"
-              style={{ display: 'inline-flex', alignItems: 'center', gap: 'var(--space-2)', minHeight: '44px' }}
+              className="btn btn-primary iac-btn-add"
+              style={{
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: '8px',
+                minHeight: '44px',
+                borderRadius: '10px',
+                fontWeight: 600,
+                boxShadow: '0 4px 10px -2px rgba(37,99,235,0.4)',
+                transition: 'all 0.15s ease',
+              }}
             >
               <Plus size={18} />
               <span>Tambah Aset</span>
@@ -387,190 +987,442 @@ export default function InventoryContainer({ user, branches, branchStats = [] }:
 
       {isSuperadminDeck ? (
         <>
-          {/* Superadmin Ringkasan: KPI cards (left) + Donut chart (right) */}
           <section
             style={{
               display: 'grid',
-              gridTemplateColumns: 'minmax(0, 1.6fr) minmax(280px, 1fr)',
               gap: 'var(--space-4)',
               marginBottom: 'var(--space-2)',
               alignItems: 'stretch',
             }}
-            className={styles.overviewGrid}
+            className={`${styles.overviewGrid} iac-overview-grid`}
           >
-            {/* KPI cards, each with a share-of-total progress bar */}
-            <div style={{
-              display: 'grid',
-              gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))',
-              gap: 'var(--space-4)',
-            }}>
+            <div className="iac-kpi-grid" style={{ display: 'grid', gap: 'var(--space-4)' }}>
               <KpiCard
                 icon={<Building2 size={20} />}
-                iconClass="primary"
                 label="Total Semua Aset"
                 value={totalAssetsSum}
                 percentOfTotal={100}
-                barColor="var(--color-primary, #3b82f6)"
+                barColor="#4f46e5"
+                iconBg="linear-gradient(135deg, #4f46e5, #6366f1)"
+                valueColor="#312e81"
+                caption="Seluruh aset di semua cabang"
               />
               <KpiCard
                 icon={<CheckCircle2 size={20} />}
-                iconClass="success"
                 label="Aktif / Bagus"
                 value={totalAktifSum}
-                valueColor="var(--color-success)"
                 percentOfTotal={pct(totalAktifSum)}
-                barColor="var(--color-success, #22c55e)"
+                barColor="#10b981"
+                iconBg="linear-gradient(135deg, #059669, #10b981)"
+                valueColor="#065f46"
+                caption="Kondisi baik & siap pakai"
               />
               <KpiCard
                 icon={<Wrench size={20} />}
-                iconClass="info"
                 label="Dalam Servis"
                 value={totalServisSum}
-                valueColor="var(--color-primary)"
                 percentOfTotal={pct(totalServisSum)}
-                barColor="var(--color-primary, #3b82f6)"
+                barColor="#3b82f6"
+                iconBg="linear-gradient(135deg, #2563eb, #3b82f6)"
+                valueColor="#1e3a8a"
+                caption="Sedang dalam perbaikan"
               />
               <KpiCard
                 icon={<AlertTriangle size={20} />}
-                iconClass="danger"
                 label="Rusak / Rusak Berat"
                 value={totalRusakSum}
-                valueColor="var(--color-danger)"
                 percentOfTotal={pct(totalRusakSum)}
-                barColor="var(--color-danger, #ef4444)"
+                barColor="#f97316"
+                iconBg="linear-gradient(135deg, #ea580c, #f97316)"
+                valueColor="#9a3412"
+                caption="Perlu tindak lanjut segera"
               />
               <KpiCard
                 icon={<HelpCircle size={20} />}
-                iconClass=""
                 label="Aset Hilang"
                 value={totalHilangSum}
-                valueColor="var(--color-text-muted)"
                 percentOfTotal={pct(totalHilangSum)}
-                barColor="var(--color-text-muted, #94a3b8)"
+                barColor="#8b5cf6"
+                iconBg="linear-gradient(135deg, #7c3aed, #a78bfa)"
+                valueColor="#5b21b6"
+                caption="Belum ditemukan / dilacak"
               />
             </div>
 
-            {/* Donut chart summarizing status distribution across all branches */}
-            <div className="stat-card" style={{
-              padding: 'var(--space-5)',
+            <div style={{
+              padding: 'var(--space-6)',
               display: 'flex',
               flexDirection: 'column',
               justifyContent: 'center',
-              gap: 'var(--space-3)',
+              gap: 'var(--space-4)',
+              borderRadius: 20,
+              background: 'linear-gradient(160deg, #ffffff 0%, #f8fafc 100%)',
+              border: '1px solid #e2e8f0',
+              boxShadow: '0 14px 32px -16px rgba(15, 23, 42, 0.22)',
             }}>
-              <p className="stat-label" style={{ fontSize: 'var(--text-xs)', margin: 0 }}>
-                Distribusi Kondisi Aset
-              </p>
-              <StatusDonutChart
-                centerLabel="Total Aset"
-                centerValue={totalAssetsSum}
-                slices={[
-                  { label: 'Aktif', value: totalAktifSum, color: 'var(--color-success, #22c55e)' },
-                  { label: 'Servis', value: totalServisSum, color: 'var(--color-primary, #3b82f6)' },
-                  { label: 'Rusak', value: totalRusakSum, color: 'var(--color-danger, #ef4444)' },
-                  { label: 'Hilang', value: totalHilangSum, color: 'var(--color-text-muted, #94a3b8)' },
-                ]}
-              />
+              <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-3)' }}>
+                <div style={{
+                  width: 38,
+                  height: 38,
+                  borderRadius: 11,
+                  background: 'linear-gradient(135deg, #6366f1, #8b5cf6)',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  color: '#ffffff',
+                  flexShrink: 0,
+                  boxShadow: '0 6px 14px -6px rgba(99, 102, 241, 0.6)',
+                }}>
+                  <PieChart size={18} />
+                </div>
+                <div>
+                  <p style={{ fontSize: 'var(--text-sm)', fontWeight: 700, margin: 0, color: '#0f172a' }}>
+                    Grafik Kategori Aset
+                  </p>
+                  <p style={{ fontSize: 'var(--text-xs)', margin: '2px 0 0 0', color: '#94a3b8' }}>
+                    Distribusi aset berdasarkan kategori
+                  </p>
+                </div>
+              </div>
+              {categoryStatsLoading && categoryAssets.length === 0 ? (
+                <p style={{ fontSize: 'var(--text-xs)', color: 'var(--color-text-muted)', margin: 0 }}>
+                  Memuat data kategori...
+                </p>
+              ) : (
+                <CategoryDonutChart
+                  slices={categorySlices}
+                  totalValue={categoryAssets.length}
+                />
+              )}
             </div>
           </section>
 
-          {/* Branch cards grid */}
-          <section className={styles.branchGrid}>
-            {branchStats.map((b) => (
-              <div 
-                key={b.branchId} 
-                className={styles.branchCard}
-                onClick={() => handleBranchCardClick(b.branchId)}
-              >
-                <div className={styles.branchCardHeader}>
-                  <div className={styles.branchInfo}>
-                    <h3>{b.name}</h3>
-                  </div>
-                  <span className={styles.branchCodeBadge}>{b.code}</span>
-                </div>
+          <section className="iac-branch-grid">
+            {branchStats.map((b, idx) => {
+              const accent = BRANCH_ACCENTS[idx % BRANCH_ACCENTS.length];
+              const statConfigs = [
+                { label: 'Aktif', value: b.aktifCount, icon: CheckCircle2, color: '#16a34a', bg: '#f0fdf4' },
+                { label: 'Servis', value: b.diperbaikiCount, icon: Wrench, color: '#2563eb', bg: '#eff6ff' },
+                { label: 'Rusak', value: b.rusakCount, icon: AlertTriangle, color: '#ea580c', bg: '#fff7ed' },
+                { label: 'Hilang', value: b.hilangCount, icon: HelpCircle, color: '#7c3aed', bg: '#f5f3ff' },
+              ];
 
-                <div className={styles.branchStatsGrid}>
-                  <div className={`${styles.branchStatItem} ${styles.aktif}`}>
-                    <span className={styles.statCount}>{b.aktifCount}</span>
-                    <span className={styles.statLabel}>Aktif</span>
-                  </div>
-                  <div className={`${styles.branchStatItem} ${styles.servis}`}>
-                    <span className={styles.statCount}>{b.diperbaikiCount}</span>
-                    <span className={styles.statLabel}>Servis</span>
-                  </div>
-                  <div className={`${styles.branchStatItem} ${styles.rusak}`}>
-                    <span className={styles.statCount}>{b.rusakCount}</span>
-                    <span className={styles.statLabel}>Rusak</span>
-                  </div>
-                  <div className={`${styles.branchStatItem} ${styles.hilang}`}>
-                    <span className={styles.statCount}>{b.hilangCount}</span>
-                    <span className={styles.statLabel}>Hilang</span>
-                  </div>
-                </div>
+              return (
+                <div
+                  key={b.branchId}
+                  className="iac-branch-card"
+                  onClick={() => handleBranchCardClick(b.branchId)}
+                  style={{
+                    position: 'relative',
+                    overflow: 'hidden',
+                    cursor: 'pointer',
+                    background: '#ffffff',
+                    borderRadius: 20,
+                    border: '1px solid #eef1f6',
+                    boxShadow: '0 10px 26px -18px rgba(15, 23, 42, 0.3)',
+                    padding: 'var(--space-5)',
+                    display: 'flex',
+                    flexDirection: 'column',
+                    '--pill-hover-bg': accent.solid,
+                  } as React.CSSProperties}
+                >
+                  {/* top accent bar */}
+                  <div style={{
+                    position: 'absolute',
+                    top: 0,
+                    left: 0,
+                    right: 0,
+                    height: 4,
+                    background: `linear-gradient(90deg, ${accent.solid}, ${accent.solid}55)`,
+                  }} />
 
-                {/* Quick visual read of the status mix for this branch */}
-                <div style={{ marginTop: 'var(--space-3)' }}>
-                  <MiniStackedBar
-                    aktif={b.aktifCount}
-                    servis={b.diperbaikiCount}
-                    rusak={b.rusakCount}
-                    hilang={b.hilangCount}
-                  />
-                </div>
+                  <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 'var(--space-3)', position: 'relative', zIndex: 1 }}>
+                    <div style={{ display: 'flex', alignItems: 'flex-start', gap: '12px', minWidth: 0 }}>
+                      <div style={{
+                        width: 46,
+                        height: 46,
+                        borderRadius: 13,
+                        flexShrink: 0,
+                        background: `linear-gradient(135deg, ${accent.solid}, ${accent.solid}cc)`,
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        boxShadow: `0 8px 16px -8px ${accent.solid}88`,
+                      }}>
+                        <Building2 size={22} color="#ffffff" />
+                      </div>
+                      <div style={{ minWidth: 0 }}>
+                        <h3 style={{
+                          fontSize: '15px',
+                          fontWeight: 800,
+                          color: '#0f172a',
+                          margin: 0,
+                          lineHeight: 1.3,
+                        }}>
+                          {b.name}
+                        </h3>
+                        <p style={{ fontSize: '11.5px', color: '#94a3b8', fontWeight: 600, margin: '2px 0 0 0' }}>
+                          Cabang &middot; {b.totalCount} aset tercatat
+                        </p>
+                      </div>
+                    </div>
+                    <span style={{
+                      flexShrink: 0,
+                      fontSize: '11px',
+                      fontWeight: 800,
+                      letterSpacing: '0.3px',
+                      color: accent.text,
+                      backgroundColor: accent.soft,
+                      padding: '5px 10px',
+                      borderRadius: 999,
+                    }}>
+                      {b.code}
+                    </span>
+                  </div>
 
-                <div className={styles.branchCardFooter}>
-                  <span>Total: {b.totalCount} Aset</span>
-                  <span className={styles.branchFooterArrow} style={{ display: 'inline-flex', alignItems: 'center', gap: '4px' }}>
-                    <span>Detail Aset</span>
-                    <ChevronRight size={14} />
-                  </span>
+                  <div style={{
+                    marginTop: 'var(--space-4)',
+                    display: 'grid',
+                    gridTemplateColumns: 'repeat(2, minmax(0, 1fr))',
+                    gap: '10px',
+                    position: 'relative',
+                    zIndex: 1,
+                  }}>
+                    {statConfigs.map((stat) => {
+                      const StatIcon = stat.icon;
+                      return (
+                        <div
+                          key={stat.label}
+                          className="iac-branch-stat-item"
+                          style={{
+                            display: 'flex',
+                            alignItems: 'center',
+                            gap: '10px',
+                            padding: '10px 12px',
+                            borderRadius: 14,
+                            backgroundColor: stat.bg,
+                          }}
+                        >
+                          <div style={{
+                            width: 30,
+                            height: 30,
+                            borderRadius: 9,
+                            flexShrink: 0,
+                            backgroundColor: '#ffffff',
+                            display: 'flex',
+                            alignItems: 'center',
+                            justifyContent: 'center',
+                            color: stat.color,
+                            boxShadow: '0 2px 6px -2px rgba(15,23,42,0.18)',
+                          }}>
+                            <StatIcon size={15} />
+                          </div>
+                          <div style={{ minWidth: 0 }}>
+                            <div style={{ fontSize: '17px', fontWeight: 800, color: '#0f172a', lineHeight: 1.1 }}>
+                              {stat.value}
+                            </div>
+                            <div style={{ fontSize: '10.5px', fontWeight: 700, color: '#64748b', textTransform: 'uppercase', letterSpacing: '0.3px' }}>
+                              {stat.label}
+                            </div>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+
+                  <div style={{ marginTop: 'var(--space-4)', position: 'relative', zIndex: 1 }}>
+                    <MiniStackedBar
+                      aktif={b.aktifCount}
+                      servis={b.diperbaikiCount}
+                      rusak={b.rusakCount}
+                      hilang={b.hilangCount}
+                    />
+                  </div>
+
+                  <div style={{
+                    marginTop: 'var(--space-4)',
+                    paddingTop: 'var(--space-3)',
+                    borderTop: '1px solid #f1f5f9',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'space-between',
+                    position: 'relative',
+                    zIndex: 1,
+                  }}>
+                    <span style={{ fontSize: '12.5px', color: '#64748b', fontWeight: 600 }}>
+                      Total: <b style={{ color: '#0f172a' }}>{b.totalCount} Aset</b>
+                    </span>
+                    <span
+                      className="iac-branch-detail-pill"
+                      style={{
+                        display: 'inline-flex',
+                        alignItems: 'center',
+                        gap: '4px',
+                        fontSize: '12px',
+                        fontWeight: 700,
+                        color: accent.text,
+                        backgroundColor: accent.soft,
+                        padding: '6px 12px',
+                        borderRadius: 999,
+                        transition: 'background-color 0.2s ease, color 0.2s ease',
+                      }}
+                    >
+                      Detail Aset
+                      <ChevronRight size={14} />
+                    </span>
+                  </div>
                 </div>
-              </div>
-            ))}
+              );
+            })}
           </section>
         </>
       ) : (
         <>
-          {/* Back to All Branches for Superadmin */}
           {user.role === 'SUPERADMIN' && (branchId !== '' || search !== '') && (
-            <div className={styles.backButtonRow}>
+            <div
+              className={styles.backButtonRow}
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'space-between',
+                flexWrap: 'wrap',
+                gap: '10px',
+                marginBottom: '4px',
+              }}
+            >
               <button 
                 type="button" 
                 onClick={handleResetFilters} 
-                className={styles.backBtn}
+                className={`${styles.backBtn} iac-back-btn`}
+                style={{
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  gap: '8px',
+                  padding: '9px 16px',
+                  borderRadius: '999px',
+                  border: '1px solid #e2e8f0',
+                  backgroundColor: '#ffffff',
+                  color: '#334155',
+                  fontWeight: 600,
+                  fontSize: '13px',
+                  boxShadow: '0 1px 3px rgba(15,23,42,0.06)',
+                  transition: 'all 0.15s ease',
+                }}
               >
                 <ArrowLeft size={16} />
                 <span>Kembali ke Semua Cabang</span>
               </button>
+
+              {branchId !== '' ? (
+                <span style={{
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  gap: '6px',
+                  padding: '7px 14px',
+                  borderRadius: '999px',
+                  backgroundColor: '#eef2ff',
+                  color: '#4338ca',
+                  fontSize: '12px',
+                  fontWeight: 600,
+                }}>
+                  <Building2 size={13} />
+                  Cabang: {branches.find(b => String(b.id) === branchId)?.name || '-'}
+                </span>
+              ) : search !== '' ? (
+                <span style={{
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  gap: '6px',
+                  padding: '7px 14px',
+                  borderRadius: '999px',
+                  backgroundColor: '#f0fdf4',
+                  color: '#15803d',
+                  fontSize: '12px',
+                  fontWeight: 600,
+                }}>
+                  <Search size={13} />
+                  Pencarian: &ldquo;{search}&rdquo;
+                </span>
+              ) : null}
             </div>
           )}
 
-          {/* Filter Card */}
-          <section className={styles.filterCard}>
-            {/* Modern Search Row */}
-            <div className={styles.toolbarRow}>
-              <div className={styles.searchWrapper}>
+          <section
+            className={styles.filterCard}
+            style={{
+              width: '100%',
+              marginBottom: '16px',
+              borderRadius: '16px',
+              border: '1px solid #e2e8f0',
+              boxShadow: '0 1px 3px rgba(15,23,42,0.05)',
+              padding: '16px',
+              backgroundColor: '#ffffff',
+            }}
+          >
+            <div className={styles.toolbarRow} style={{ display: 'flex', gap: '12px', flexWrap: 'wrap', alignItems: 'center' }}>
+              <div className={styles.searchWrapper} style={{ flex: 1, minWidth: '240px', position: 'relative' }}>
+                <Search size={18} style={{ position: 'absolute', left: '14px', top: '50%', transform: 'translateY(-50%)', color: '#94a3b8', pointerEvents: 'none' }} />
                 <input
                   type="text"
-                  className={styles.searchInput}
-                  placeholder="Cari nama aset, kode tag, kategori, PIC holder..."
+                  className={`${styles.searchInput} iac-search-input`}
+                  placeholder="Cari nama aset, kode, serial number, lokasi, atau PIC..."
                   value={search}
                   onChange={(e) => setSearch(e.target.value)}
+                  style={{
+                    width: '100%',
+                    padding: '11px 14px 11px 42px',
+                    borderRadius: '10px',
+                    border: '1px solid #e2e8f0',
+                    backgroundColor: '#f8fafc',
+                    fontSize: '14px',
+                    color: '#0f172a',
+                    outline: 'none',
+                    transition: 'all 0.15s ease',
+                  }}
                 />
-                <Search size={18} style={{ position: 'absolute', left: 'var(--space-4)', top: '50%', transform: 'translateY(-50%)', color: 'var(--color-text-muted)', opacity: 0.6 }} />
               </div>
 
-              <div className={styles.actionButtons}>
+              <div className={styles.actionButtons} style={{ display: 'flex', gap: '8px' }}>
                 <button
                   type="button"
                   onClick={() => setShowAdvancedFilters(prev => !prev)}
-                  className={`${styles.toggleBtn} ${showAdvancedFilters ? styles.toggleActive : ''}`}
+                  className={`${styles.toggleBtn} ${showAdvancedFilters ? styles.toggleActive : ''} iac-filter-toggle`}
                   title="Tampilkan Penyaringan Lanjutan"
+                  style={{
+                    display: 'inline-flex',
+                    alignItems: 'center',
+                    gap: '8px',
+                    padding: '10px 16px',
+                    borderRadius: '10px',
+                    border: showAdvancedFilters ? '1px solid #2563eb' : '1px solid #e2e8f0',
+                    backgroundColor: showAdvancedFilters ? '#eff6ff' : '#ffffff',
+                    color: showAdvancedFilters ? '#1d4ed8' : '#334155',
+                    fontWeight: 600,
+                    fontSize: '13px',
+                    transition: 'all 0.15s ease',
+                  }}
                 >
                   <Filter size={16} />
                   <span>Filter Lanjutan</span>
                   {activeFiltersCount > 0 && (
-                    <span className={styles.badge}>{activeFiltersCount}</span>
+                    <span
+                      className={styles.badge}
+                      style={{
+                        backgroundColor: '#2563eb',
+                        color: '#ffffff',
+                        borderRadius: '999px',
+                        fontSize: '11px',
+                        fontWeight: 700,
+                        minWidth: '18px',
+                        height: '18px',
+                        display: 'inline-flex',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        padding: '0 4px',
+                      }}
+                    >
+                      {activeFiltersCount}
+                    </span>
                   )}
                 </button>
 
@@ -578,28 +1430,47 @@ export default function InventoryContainer({ user, branches, branchStats = [] }:
                   <button 
                     type="button" 
                     onClick={handleResetFilters} 
-                    className={styles.resetBtn}
+                    className={`${styles.resetBtn} iac-reset-btn`}
                     title="Reset Semua Filter"
+                    style={{
+                      display: 'inline-flex',
+                      alignItems: 'center',
+                      gap: '6px',
+                      padding: '10px 16px',
+                      borderRadius: '10px',
+                      border: '1px solid #e2e8f0',
+                      backgroundColor: '#ffffff',
+                      color: '#64748b',
+                      fontWeight: 600,
+                      fontSize: '13px',
+                      transition: 'all 0.15s ease',
+                    }}
                   >
-                    Reset Filter
+                    <X size={14} />
+                    <span>Reset Filter</span>
                   </button>
                 )}
               </div>
             </div>
 
-            {/* Advanced Filters Panel */}
             {showAdvancedFilters && (
-              <div className={styles.advancedPanel}>
-                <div className={styles.advancedGrid}>
-                  {/* Branch Isolation Filter */}
+              <div
+                className={styles.advancedPanel}
+                style={{ marginTop: '14px', paddingTop: '14px', borderTop: '1px dashed #e2e8f0' }}
+              >
+                <div
+                  className={styles.advancedGrid}
+                  style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: '12px' }}
+                >
                   {user.role === 'SUPERADMIN' ? (
                     <div className={styles.filterGroup}>
-                      <label htmlFor="branch-filter" className={styles.label}>Cabang</label>
+                      <label htmlFor="branch-filter" className={styles.label} style={{ fontSize: '12px', fontWeight: 600, color: '#64748b', marginBottom: '6px', display: 'block' }}>Cabang</label>
                       <select
                         id="branch-filter"
                         className={styles.input}
                         value={branchId}
                         onChange={(e) => handleFilterChange(setBranchId, e.target.value)}
+                        style={{ width: '100%', padding: '10px 12px', borderRadius: '10px', border: '1px solid #e2e8f0', backgroundColor: '#f8fafc', fontSize: '13px', color: '#0f172a' }}
                       >
                         <option value="">Semua Cabang</option>
                         {branches.map(b => (
@@ -609,44 +1480,45 @@ export default function InventoryContainer({ user, branches, branchStats = [] }:
                     </div>
                   ) : (
                     <div className={styles.filterGroup}>
-                      <label className={styles.label}>Cabang Terkunci</label>
+                      <label className={styles.label} style={{ fontSize: '12px', fontWeight: 600, color: '#64748b', marginBottom: '6px', display: 'block' }}>Cabang Terkunci</label>
                       <input
                         type="text"
                         className={styles.input}
                         value={user.branchId ? branches.find(b => b.id === user.branchId)?.name || 'Cabang Terdaftar' : '-'}
                         disabled
+                        style={{ width: '100%', padding: '10px 12px', borderRadius: '10px', border: '1px solid #e2e8f0', backgroundColor: '#f1f5f9', fontSize: '13px', color: '#64748b' }}
                       />
                     </div>
                   )}
 
-                  {/* Status Filter */}
                   <div className={styles.filterGroup}>
-                    <label htmlFor="status-filter" className={styles.label}>Kondisi / Status</label>
+                    <label htmlFor="status-filter" className={styles.label} style={{ fontSize: '12px', fontWeight: 600, color: '#64748b', marginBottom: '6px', display: 'block' }}>Kondisi / Status</label>
                     <select
                       id="status-filter"
                       className={styles.input}
                       value={status}
                       onChange={(e) => handleFilterChange(setStatus, e.target.value)}
+                      style={{ width: '100%', padding: '10px 12px', borderRadius: '10px', border: '1px solid #e2e8f0', backgroundColor: '#f8fafc', fontSize: '13px', color: '#0f172a' }}
                     >
                       <option value="">Semua Kondisi</option>
-                      <option value="AKTIF">Aktif (Bagus)</option>
+                      <option value="AKTIF">Aktif (Baik)</option>
                       <option value="RUSAK">Rusak</option>
                       <option value="DIPERBAIKI">Dalam Servis</option>
                       <option value="HILANG">Hilang</option>
                     </select>
                   </div>
 
-                  {/* Category Filter */}
                   <div className={styles.filterGroup}>
-                    <label htmlFor="category-filter" className={styles.label}>Kategori</label>
+                    <label htmlFor="category-filter" className={styles.label} style={{ fontSize: '12px', fontWeight: 600, color: '#64748b', marginBottom: '6px', display: 'block' }}>Kategori</label>
                     <select
                       id="category-filter"
                       className={styles.input}
                       value={category}
                       onChange={(e) => handleFilterChange(setCategory, e.target.value)}
+                      style={{ width: '100%', padding: '10px 12px', borderRadius: '10px', border: '1px solid #e2e8f0', backgroundColor: '#f8fafc', fontSize: '13px', color: '#0f172a' }}
                     >
                       <option value="">Semua Kategori</option>
-                      {ASSET_CATEGORIES.map(cat => (
+                      {EXTENDED_CATEGORIES.map(cat => (
                         <option key={cat} value={cat}>{cat}</option>
                       ))}
                     </select>
@@ -656,8 +1528,7 @@ export default function InventoryContainer({ user, branches, branchStats = [] }:
             )}
           </section>
 
-          {/* Main Table Listing */}
-          <section className={styles.tableCard}>
+          <section className={styles.tableCard} style={{ width: '100%', padding: '16px' }}>
             {loading ? (
               <div className={styles.loadingCover}>
                 <div className={styles.spinner}></div>
@@ -695,89 +1566,226 @@ export default function InventoryContainer({ user, branches, branchStats = [] }:
             ) : (
               <>
                 <div className={styles.tableResponsive}>
-                  <table className={styles.table}>
+                  <table 
+                    style={{ 
+                      width: '100%', 
+                      borderCollapse: 'separate', 
+                      borderSpacing: '0 8px' 
+                    }}
+                  >
                     <thead>
                       <tr>
-                        <th className={styles.th} style={{ width: '60px', textAlign: 'center' }}>Foto</th>
-                        <th className={styles.th} style={{ cursor: 'pointer' }} onClick={() => handleSort('assetTag')}>
+                        <th style={{ ...headerThStyle, width: '45px', textAlign: 'center', borderTopLeftRadius: '8px', borderBottomLeftRadius: '8px' }}>NO</th>
+                        <th style={{ ...headerThStyle, cursor: 'pointer' }} onClick={() => handleSort('assetTag')}>
                           <div style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
-                            <span>Kode Tag</span>
-                            <ArrowUpDown size={14} />
+                            <span>KODE</span>
+                            <ArrowUpDown size={12} />
                           </div>
                         </th>
-                        <th className={styles.th} style={{ cursor: 'pointer' }} onClick={() => handleSort('name')}>
+                        <th style={{ ...headerThStyle, cursor: 'pointer' }} onClick={() => handleSort('name')}>
                           <div style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
-                            <span>Nama Aset</span>
-                            <ArrowUpDown size={14} />
+                            <span>NAMA BARANG (S/N)</span>
+                            <ArrowUpDown size={12} />
                           </div>
                         </th>
-                        <th className={styles.th} style={{ cursor: 'pointer' }} onClick={() => handleSort('category')}>
+                        <th style={{ ...headerThStyle }}>USER (PIC)</th>
+                        <th style={{ ...headerThStyle, cursor: 'pointer' }} onClick={() => handleSort('price')}>
                           <div style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
-                            <span>Kategori</span>
-                            <ArrowUpDown size={14} />
+                            <span>HARGA</span>
+                            <ArrowUpDown size={12} />
                           </div>
                         </th>
-                        <th className={styles.th}>Brand / Model</th>
-                        <th className={styles.th}>Lokasi Detail</th>
-                        <th className={styles.th}>PIC</th>
-                        <th className={styles.th} style={{ cursor: 'pointer', width: '100px' }} onClick={() => handleSort('status')}>
+                        <th style={{ ...headerThStyle, cursor: 'pointer' }} onClick={() => handleSort('category')}>
                           <div style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
-                            <span>Status</span>
-                            <ArrowUpDown size={14} />
+                            <span>KATEGORI</span>
+                            <ArrowUpDown size={12} />
                           </div>
                         </th>
+                        <th style={{ ...headerThStyle }}>LOKASI</th>
+                        <th style={{ ...headerThStyle, cursor: 'pointer', width: '90px' }} onClick={() => handleSort('status')}>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
+                            <span>KONDISI</span>
+                            <ArrowUpDown size={12} />
+                          </div>
+                        </th>
+                        <th style={{ ...headerThStyle, width: '95px' }}>LABEL</th>
                         {user.role === 'SUPERADMIN' && (
-                          <th className={styles.th} style={{ cursor: 'pointer' }} onClick={() => handleSort('branchId')}>
+                          <th style={{ ...headerThStyle, cursor: 'pointer' }} onClick={() => handleSort('branchId')}>
                             <div style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
-                              <span>Cabang</span>
-                              <ArrowUpDown size={14} />
+                              <span>CABANG</span>
+                              <ArrowUpDown size={12} />
                             </div>
                           </th>
                         )}
+                        <th style={{ ...headerThStyle, textAlign: 'center', width: '130px', borderTopRightRadius: '8px', borderBottomRightRadius: '8px' }}>AKSI</th>
                       </tr>
                     </thead>
                     <tbody>
-                      {assets.map((asset) => (
-                        <tr 
-                          key={asset.id} 
-                          className={styles.tr}
-                          onClick={() => handleRowClick(asset)}
-                        >
-                          <td className={styles.td} style={{ textAlign: 'center' }}>
-                            <div className={styles.assetPhotoCell}>
-                              {asset.imagePath ? (
-                                <img 
-                                  src={asset.imagePath} 
-                                  alt={asset.name} 
-                                  className={styles.assetPhotoThumb}
-                                  onError={(e) => {
-                                    // Fallback image check
-                                    (e.target as HTMLImageElement).src = '';
-                                  }}
-                                />
+                      {assets.map((asset, idx) => {
+                        const rowNum = (page - 1) * 10 + idx + 1;
+                        const cellStyle: React.CSSProperties = {
+                          backgroundColor: '#f8fafc',
+                          padding: '12px 14px',
+                          verticalAlign: 'middle',
+                          fontSize: '13px',
+                          borderTop: '1px solid #e2e8f0',
+                          borderBottom: '1px solid #e2e8f0'
+                        };
+
+                        return (
+                          <tr 
+                            key={asset.id} 
+                            style={{ cursor: 'pointer' }}
+                            onClick={() => handleRowClick(asset)}
+                          >
+                            <td style={{ 
+                              ...cellStyle, 
+                              textAlign: 'center', 
+                              fontWeight: 600, 
+                              color: '#64748b',
+                              borderLeft: '1px solid #e2e8f0',
+                              borderTopLeftRadius: '8px',
+                              borderBottomLeftRadius: '8px'
+                            }}>
+                              {rowNum}
+                            </td>
+
+                            <td style={{ ...cellStyle, fontWeight: 700, color: '#0f172a' }}>
+                              {getDisplayAssetTag(asset, idx)}
+                            </td>
+
+                            <td style={{ ...cellStyle }}>
+                              <div style={{ fontWeight: 700, color: '#1e293b' }}>{asset.name}</div>
+                              {asset.serialNumber ? (
+                                <div style={{ fontSize: '11px', color: '#64748b', marginTop: '2px' }}>
+                                  SN: {asset.serialNumber}
+                                </div>
                               ) : (
-                                <ImageIcon size={18} className={styles.assetPhotoPlaceholder} />
+                                <div style={{ fontSize: '11px', color: '#94a3b8', marginTop: '2px' }}>
+                                  SN: -
+                                </div>
                               )}
-                            </div>
-                          </td>
-                          <td className={`${styles.td} ${styles.tdBold}`}>{asset.assetTag || '-'}</td>
-                          <td className={styles.td} style={{ fontWeight: 600 }}>{asset.name}</td>
-                          <td className={styles.td}>{asset.category}</td>
-                          <td className={styles.td}>{asset.brandModel || '-'}</td>
-                          <td className={styles.td}>{asset.locationDetail || '-'}</td>
-                          <td className={styles.td}>{asset.pic || '-'}</td>
-                          <td className={styles.td}>{getStatusBadge(asset.status)}</td>
-                          {user.role === 'SUPERADMIN' && (
-                            <td className={styles.td}>{asset.branch?.name || '-'}</td>
-                          )}
-                        </tr>
-                      ))}
+                            </td>
+
+                            <td style={{ ...cellStyle }}>
+                              {asset.pic ? (
+                                <span style={{ fontWeight: 500, color: '#334155' }}>{asset.pic}</span>
+                              ) : (
+                                <span style={{ fontStyle: 'italic', color: '#94a3b8', fontSize: '12px' }}>Belum ada user</span>
+                              )}
+                            </td>
+
+                            <td style={{ ...cellStyle }}>
+                              {asset.price ? (
+                                <div>
+                                  <span style={{ color: '#64748b', fontSize: '11px', display: 'block' }}>Beli:</span>
+                                  <span style={{ fontWeight: 600, color: '#0f172a' }}>{formatRupiah(asset.price)}</span>
+                                </div>
+                              ) : (
+                                '-'
+                              )}
+                            </td>
+
+                            <td style={{ ...cellStyle, color: '#334155', fontWeight: 500 }}>
+                              {asset.category}
+                            </td>
+
+                            <td style={{ ...cellStyle, color: '#334155' }}>
+                              {asset.locationDetail || '-'}
+                            </td>
+
+                            <td style={{ ...cellStyle }}>
+                              {getStatusBadge(asset.status)}
+                            </td>
+
+                            <td style={{ ...cellStyle }}>
+                              {renderLabelCell(asset)}
+                            </td>
+
+                            {user.role === 'SUPERADMIN' && (
+                              <td style={{ ...cellStyle, color: '#475569', fontSize: '12px' }}>
+                                {asset.branch?.name || '-'}
+                              </td>
+                            )}
+
+                            <td style={{ 
+                              ...cellStyle, 
+                              textAlign: 'center',
+                              borderRight: '1px solid #e2e8f0',
+                              borderTopRightRadius: '8px',
+                              borderBottomRightRadius: '8px'
+                            }} onClick={(e) => e.stopPropagation()}>
+                              <div style={{ display: 'flex', gap: '6px', justifyContent: 'center', alignItems: 'center' }}>
+                                <button
+                                  type="button"
+                                  title="Lihat / Edit Detail"
+                                  onClick={() => handleRowClick(asset)}
+                                  style={{
+                                    border: '1px solid #cbd5e1',
+                                    borderRadius: '8px',
+                                    padding: '8px',
+                                    backgroundColor: '#ffffff',
+                                    cursor: 'pointer',
+                                    color: '#475569',
+                                    display: 'flex',
+                                    alignItems: 'center',
+                                    justifyContent: 'center'
+                                  }}
+                                >
+                                  <Eye size={16} />
+                                </button>
+
+                                <button
+                                  type="button"
+                                  title="Serah Terima Aset"
+                                  onClick={() => handleRowClick(asset)}
+                                  style={{
+                                    border: 'none',
+                                    borderRadius: '8px',
+                                    padding: '8px',
+                                    backgroundColor: '#00b87c',
+                                    cursor: 'pointer',
+                                    color: '#ffffff',
+                                    display: 'flex',
+                                    alignItems: 'center',
+                                    justifyContent: 'center'
+                                  }}
+                                >
+                                  <Handshake size={16} />
+                                </button>
+
+                                <button
+                                  type="button"
+                                  title="Lihat / Cetak QR Code"
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    setSelectedAsset(asset);
+                                    setQrLabelModalOpen(true);
+                                  }}
+                                  style={{
+                                    border: 'none',
+                                    borderRadius: '8px',
+                                    padding: '8px',
+                                    backgroundColor: '#64748b',
+                                    cursor: 'pointer',
+                                    color: '#ffffff',
+                                    display: 'flex',
+                                    alignItems: 'center',
+                                    justifyContent: 'center'
+                                  }}
+                                >
+                                  <QrCode size={16} />
+                                </button>
+                              </div>
+                            </td>
+                          </tr>
+                        );
+                      })}
                     </tbody>
                   </table>
                 </div>
 
-                {/* Pagination controls */}
-                <div className={styles.paginationRow}>
+                <div className={styles.paginationRow} style={{ marginTop: '16px' }}>
                   <div className={styles.paginationInfo}>
                     Menampilkan <b>{Math.min(totalCount, (page - 1) * 10 + 1)}</b> hingga <b>{Math.min(totalCount, page * 10)}</b> dari <b>{totalCount}</b> aset
                   </div>
@@ -818,7 +1826,6 @@ export default function InventoryContainer({ user, branches, branchStats = [] }:
         </>
       )}
 
-      {/* Asset Detail, Create, and Edit Modal */}
       {detailModalOpen && (
         <AssetDetailModal
           isOpen={detailModalOpen}
@@ -834,7 +1841,6 @@ export default function InventoryContainer({ user, branches, branchStats = [] }:
         />
       )}
 
-      {/* Bulk Import Modal */}
       {importModalOpen && (
         <AssetImportModal
           isOpen={importModalOpen}
@@ -845,6 +1851,14 @@ export default function InventoryContainer({ user, branches, branchStats = [] }:
             setImportModalOpen(false);
             setRefreshTrigger(prev => prev + 1);
           }}
+        />
+      )}
+
+      {qrLabelModalOpen && (
+        <QrLabelModal
+          isOpen={qrLabelModalOpen}
+          onClose={() => setQrLabelModalOpen(false)}
+          asset={selectedAsset}
         />
       )}
     </div>

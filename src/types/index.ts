@@ -131,6 +131,7 @@ export interface NavItem {
 // ============================================================
 
 export const ASSET_CATEGORIES = [
+  'Laptop & Komputer',
   'Elektronik',
   'Peralatan Kantor',
   'Mebel & Furniture',
@@ -146,8 +147,30 @@ export function isValidAssetCategory(category: string): category is AssetCategor
   return ASSET_CATEGORIES.includes(category as AssetCategory);
 }
 
-export function normalizeAssetCategory(category: string): AssetCategory | null {
-  const normalized = category.trim().toLowerCase();
+export function normalizeAssetCategory(rawCategory: string): AssetCategory | null {
+  if (!rawCategory) return null;
+
+  const normalized = rawCategory.trim().toLowerCase();
+
+  // Map common laptop and computer variations from imported files.
+  if (
+    normalized.includes('laptop') ||
+    normalized.includes('komputer') ||
+    normalized.includes('computer') ||
+    normalized.includes('pc') ||
+    normalized.includes('notebook')
+  ) {
+    return 'Laptop & Komputer';
+  }
+
+  if (normalized.includes('elektronik') || normalized.includes('electronic')) return 'Elektronik';
+  if (normalized.includes('kantor') || normalized.includes('office')) return 'Peralatan Kantor';
+  if (normalized.includes('mebel') || normalized.includes('furniture')) return 'Mebel & Furniture';
+  if (normalized.includes('kendaraan') || normalized.includes('vehicle')) return 'Kendaraan';
+  if (normalized.includes('dapur') || normalized.includes('mess')) return 'Peralatan Dapur & Mess';
+  if (normalized.includes('perkakas') || normalized.includes('alat berat')) return 'Perkakas & Alat Berat';
+  if (normalized.includes('lain') || normalized.includes('other')) return 'Lain-lain';
+
   const matched = ASSET_CATEGORIES.find(c => c.toLowerCase() === normalized);
   return matched || null;
 }
@@ -155,8 +178,9 @@ export function normalizeAssetCategory(category: string): AssetCategory | null {
 export interface AssetFormData {
   assetTag?: string | null;
   name: string;
-  brandModel?: string | null;
   category: string;
+  price?: number | null;
+  serialNumber?: string | null;
   locationDetail?: string | null;
   pic?: string | null;
   status: 'AKTIF' | 'RUSAK' | 'DIPERBAIKI' | 'HILANG';
@@ -165,5 +189,3 @@ export interface AssetFormData {
   purchaseYear: number;
   branchId?: number;
 }
-
-
