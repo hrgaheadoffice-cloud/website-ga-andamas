@@ -17,12 +17,16 @@ import {
   MapPin,
   Tag
 } from 'lucide-react';
-import { createAsset, updateAsset, archiveAsset } from '@/lib/actions/assets';
+import {
+  createAsset,
+  updateAsset,
+  archiveAsset,
+  getNextAssetSequence,
+} from '@/lib/actions/assets';
 import type { AssetWithRelations } from '@/lib/actions/assets';
 import type { Branch, AssetStatus } from '@prisma/client';
 import { type AuthUser, ASSET_CATEGORIES } from '@/types';
 import { generateAssetTag } from '@/lib/utils/assetTag';
-import { getNextAssetSequence } from '@/lib/actions/assets';
 import styles from './modal.module.css';
 import inputStyles from '@/app/(dashboard)/transaksi/input/input.module.css';
 
@@ -104,9 +108,13 @@ export default function AssetDetailModal({
     setIsDeleting(false);
   }, [asset, initialCreateMode, isOpen, user.branchId]);
 
-  const regenerateAssetTag = async (nextCategory: string, nextBranchId = branchId) => {
+  const regenerateAssetTag = async (
+    nextCategory: string,
+    nextBranchId = branchId,
+    forceRegenerate = false
+  ) => {
     if (!nextCategory || !nextBranchId) return;
-    if (assetTag && assetTag.trim() !== '') return;
+    if (!forceRegenerate && assetTag && assetTag.trim() !== '') return;
 
     const selectedBranch = branches.find((b) => b.id === Number(nextBranchId));
     const branchCode = selectedBranch?.code || 'HO';
@@ -123,9 +131,7 @@ export default function AssetDetailModal({
 
   const handleCategoryChange = async (newCategory: string) => {
     setCategory(newCategory);
-    if (!assetTag || assetTag.trim() === '') {
-      await regenerateAssetTag(newCategory);
-    }
+    await regenerateAssetTag(newCategory, branchId, true);
   };
 
   // LOGIKA AUTO-GENERATE KODE TAG ASET
